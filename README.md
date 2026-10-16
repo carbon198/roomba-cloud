@@ -60,7 +60,7 @@ Download the Compose file and environment template from the latest stable releas
 mkdir roomba-cloud
 cd roomba-cloud
 curl -fL https://github.com/carbon198/roomba-cloud/releases/latest/download/compose.yaml -o compose.yaml
-curl -fL https://github.com/carbon198/roomba-cloud/releases/latest/download/.env.example -o .env.example
+curl -fL https://github.com/carbon198/roomba-cloud/releases/latest/download/default.env.example -o .env.example
 cp .env.example .env
 mkdir -p certs
 ```
