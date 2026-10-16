@@ -1,0 +1,5 @@
+-r requirements.txt
+-r requirements-provisioning.txt
+coverage>=7.10,<8
+mypy>=1.19,<2
+ruff>=0.14,<0.15

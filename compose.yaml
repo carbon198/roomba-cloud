@@ -1,0 +1,75 @@
+# Both processes must share state and schema versions; upgrade/restart them together.
+# Stop both before backups. `down` retains state; `down -v` intentionally destroys it.
+# Requires Linux Docker Engine + Compose; rootless Podman has also passed smoke tests.
+services:
+  mqtt:
+    image: ${ROOMBA_IMAGE:-ghcr.io/carbon198/roomba-cloud:latest}
+    command: ["mqtt"]
+    restart: unless-stopped
+    init: true
+    environment: &server-environment
+      PUBLIC_URL: ${PUBLIC_URL:?Set PUBLIC_URL in .env}
+      DATA_DIR: ${DATA_DIR:-/data}
+      CUSTOMER_TOKEN_FILE: ${CUSTOMER_TOKEN_FILE:-}
+      BIND: ${BIND:-0.0.0.0}
+      HTTPS_PORT: ${HTTPS_PORT:-8443}
+      MQTT_PORT: ${MQTT_PORT:-8883}
+      TLS_CERT: ${TLS_CERT:-}
+      TLS_KEY: ${TLS_KEY:-}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+      ACME_AGREE_TOS: ${ACME_AGREE_TOS:-false}
+      ACME_STAGING: ${ACME_STAGING:-false}
+    ports:
+      # Robot discovery advertises a hostname, not an MQTT port: keep external 8883.
+      - "${MQTT_HOST_PORT:-8883}:${MQTT_PORT:-8883}"
+    volumes:
+      - ./certs:/certs:ro
+      - state:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      # TCP reachability only, not robot online/auth/TLS health. ACME may still be waiting.
+      test: ["CMD", "python", "-m", "deployment.docker_entrypoint", "healthcheck", "--check-service", "mqtt"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+  https:
+    image: ${ROOMBA_IMAGE:-ghcr.io/carbon198/roomba-cloud:latest}
+    command: ["https"]
+    restart: unless-stopped
+    init: true
+    environment: *server-environment
+    ports:
+      - "${HTTPS_HOST_PORT:-443}:${HTTPS_PORT:-8443}"
+    volumes:
+      - ./certs:/certs:ro
+      - state:/data
+      - dns-challenges:/data/dns-challenges
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: ["CMD", "python", "-m", "deployment.docker_entrypoint", "healthcheck", "--check-service", "https"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+volumes:
+  # Share only this volume read-only with a DNS updater, not the private state.
+  dns-challenges:
+  # Tokens, DBs, map archives and ACME account/key state are private and persistent.
+  state:

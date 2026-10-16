@@ -1,0 +1,36 @@
+# Deny-by-default build context: explicitly allow source, never private state.
+# Every Dockerfile COPY source must appear here; test_deployment enforces parity.
+**
+!requirements.txt
+!native/
+!native/mqtt_tls_bridge.c
+!deployment/
+!deployment/__init__.py
+!deployment/docker_entrypoint.py
+!roomba_cloud/
+!roomba_cloud/__init__.py
+!roomba_cloud/__main__.py
+!roomba_cloud/server.py
+!roomba_cloud/cloud_http.py
+!roomba_cloud/mqtt_server.py
+!roomba_cloud/acme_dns.py
+!roomba_cloud/shadow_service.py
+!roomba_cloud/robot_commands.py
+!roomba_cloud/robot_settings.py
+!roomba_cloud/robot_mqtt.py
+!roomba_cloud/telemetry_events.py
+!roomba_cloud/customer_telemetry.py
+!roomba_cloud/ha_mqtt_publish.py
+!roomba_cloud/discovery_response.json
+!roomba_cloud/maps/
+!roomba_cloud/maps/__init__.py
+!roomba_cloud/maps/upload.py
+!roomba_cloud/maps/preview.py
+!roomba_cloud/maps/catalog.py
+!roomba_cloud/maps/controls.py
+!roomba_cloud/maps/room_edits.py
+!roomba_cloud/maps/live_position.py
+!roomba_cloud/maps/customer_maps.py
+!roomba_cloud/web/
+!roomba_cloud/web/__init__.py
+!roomba_cloud/web/dashboard.py

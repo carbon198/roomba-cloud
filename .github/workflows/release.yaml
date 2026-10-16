@@ -1,0 +1,87 @@
+name: Publish release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  tests:
+    uses: ./.github/workflows/test.yaml
+
+  publish:
+    needs: tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate image tag and determine registry path
+        id: image
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || [[ "$RELEASE_TAG" == latest ]]; then
+            echo "::error::Release tags must be Docker-compatible and must not be named latest."
+            exit 1
+          fi
+          echo "name=ghcr.io/${REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/metadata-action@v5
+        id: metadata
+        with:
+          images: ${{ steps.image.outputs.name }}
+          flavor: latest=false
+          tags: |
+            type=raw,value=${{ github.event.release.tag_name }}
+            type=raw,value=latest,enable=${{ !github.event.release.prerelease }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Prepare version-pinned installation files
+        env:
+          RELEASE_IMAGE: ${{ steps.image.outputs.name }}:${{ github.event.release.tag_name }}
+        run: |
+          mkdir release-assets
+          cp compose.yaml release-assets/compose.yaml
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          template = Path(".env.example").read_text()
+          default = "ROOMBA_IMAGE=ghcr.io/carbon198/roomba-cloud:latest"
+          if template.count(default) != 1:
+              raise SystemExit("Expected exactly one default image in .env.example")
+          template = template.replace(
+              default,
+              "ROOMBA_IMAGE=" + os.environ["RELEASE_IMAGE"],
+          )
+          Path("release-assets/.env.example").write_text(template)
+          PY
+      - name: Attach installation files to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$RELEASE_TAG" release-assets/compose.yaml release-assets/.env.example --clobber

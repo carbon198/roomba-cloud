@@ -1,0 +1,49 @@
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+
+[tool.ruff.lint]
+# Core correctness plus mutable defaults, eager defaults, loop captures and chaining.
+# PEP 8/257 guide readable code; no blanket docstring rule for obvious helpers.
+select = ["E4", "E7", "E9", "F", "B006", "B008", "B023", "B904"]
+
+[tool.mypy]
+python_version = "3.14"
+files = [
+    "roomba_cloud/maps/controls.py",
+    "roomba_cloud/telemetry_events.py",
+    "roomba_cloud/maps/room_edits.py",
+    "roomba_cloud/robot_commands.py",
+    "roomba_cloud/customer_telemetry.py",
+]
+follow_imports = "silent"
+strict = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+
+[[tool.mypy.overrides]]
+# Legacy internals are gradually typed; bodies/annotated returns remain checked.
+# Prefer real boundary contracts to blanket ignore_errors or Any-shaped success.
+module = ["roomba_cloud.maps.room_edits", "roomba_cloud.robot_commands"]
+disallow_untyped_defs = false
+disallow_untyped_calls = false
+
+[[tool.mypy.overrides]]
+module = ["roomba_cloud.customer_telemetry"]
+disallow_untyped_calls = false
+
+[tool.coverage.run]
+# Subprocess/Node/container execution is tested separately, not measured here.
+branch = true
+source = ["roomba_cloud", "provisioning", "deployment"]
+# The thin package entry point is exercised by subprocess CLI tests.
+omit = ["roomba_cloud/__main__.py"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+# Regression floor, not a production-readiness/load-handling guarantee.
+# CI also gates HTTP at 85% and mission guard/listener together at 95%.
+fail_under = 84
+precision = 2

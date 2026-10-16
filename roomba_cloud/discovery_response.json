@@ -1,0 +1,11 @@
+{
+  "awsRegion": "us-east-1",
+  "discoveryTTL": 60,
+  "httpBase": "https://roomba.example.com",
+  "iotTopics": "$aws",
+  "irbtTopics": "v011-irbthbu",
+  "mqtt": "roomba.example.com",
+  "mqttApp": "roomba.example.com",
+  "mqttAts": "roomba.example.com",
+  "svcDeplId": "v011"
+}

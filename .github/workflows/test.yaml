@@ -1,0 +1,46 @@
+name: Tests
+# Require the `tests` job in repository branch protection separately; a workflow
+# cannot itself prohibit merges. No live robot, CA issuance or public DNS changes.
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - uses: actions/setup-node@v4
+        # Python invokes the dependency-free Node VM dashboard harness.
+        with:
+          node-version: "24"
+      - run: sudo apt-get update && sudo apt-get install -y libssl-dev
+      - run: pip install -r requirements-dev.txt
+      - run: python -m ruff check .
+      - run: python -m ruff format --check .
+      - run: python -m mypy
+      - run: mkdir -p tools && cc -O2 -Wall -Wextra -Werror native/mqtt_tls_bridge.c -o tools/mqtt_tls_bridge -lssl -lcrypto
+      - run: python -m coverage run -m unittest discover -s tests -q
+      # Overall branch-aware regression floor lives in pyproject.toml.
+      - run: python -m coverage report
+      - run: python -m coverage report --include=roomba_cloud/cloud_http.py --fail-under=85
+      - run: python -m coverage report --include=roomba_cloud/maps/controls.py,roomba_cloud/telemetry_events.py --fail-under=95
+      - run: python -m coverage xml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.xml
+      - run: docker compose config --quiet
+        env:
+          PUBLIC_URL: https://roomba.example.com
+      - run: docker build -t roomba-cloud:test .
+      # Isolated synthetic services exercise packaging/TLS/IPC without LAN ports.
+      - run: python tests/container_smoke.py --image roomba-cloud:test

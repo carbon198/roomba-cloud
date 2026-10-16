@@ -1,0 +1,3 @@
+Pillow>=12.0,<13
+certbot>=5.0,<6
+dnspython>=2.7,<3
