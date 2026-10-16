@@ -24,12 +24,14 @@ access to all robots in this deployment, not a per-robot tenant boundary.
 """
 
 import argparse
+import http.client
 import json
 import os
 from pathlib import Path
 import secrets
 import signal
 import socket
+import ssl
 import sqlite3
 import stat
 import subprocess
@@ -37,6 +39,57 @@ import sys
 import tempfile
 import time
 from urllib.parse import urlsplit
+
+
+HEALTHCHECK_CLIENT_ID = "roomba-cloud-healthcheck"
+
+
+def healthcheck(config, service):
+    """Check local TLS and protocol responsiveness without touching robot state.
+
+    Trust the configured chain locally, including supplied/private-CA PEMs; this
+    does not establish that a robot trusts it. Missing/expired/mismatched
+    certificates and protocol failures must fail the check, not fall back to TCP.
+    """
+    from roomba_cloud.mqtt_server import read_frame, successful_connack
+    from roomba_cloud.robot_mqtt import mqtt_string, packet
+
+    cert = (
+        config.data_dir / "acme/config/live" / config.hostname / "fullchain.pem"
+        if config.acme_enabled
+        else config.tls_cert
+    )
+    context = ssl.create_default_context(cafile=str(cert))
+    context.verify_flags |= ssl.VERIFY_X509_PARTIAL_CHAIN
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    host = {"0.0.0.0": "127.0.0.1", "::": "::1"}.get(config.bind, config.bind)
+    with socket.create_connection((host, config.ports[service]), timeout=1) as raw:
+        with context.wrap_socket(raw, server_hostname=config.hostname) as conn:
+            if service == "https":
+                conn.sendall(
+                    (
+                        f"GET /healthz HTTP/1.1\r\nHost: {config.hostname}\r\n"
+                        "Connection: close\r\n\r\n"
+                    ).encode("ascii")
+                )
+                response = http.client.HTTPResponse(conn)
+                with response:
+                    response.begin()
+                    if response.status != 200 or response.getheader("Content-Length") != "0":
+                        raise RuntimeError("HTTPS healthcheck returned an unexpected response")
+            else:
+                conn.sendall(
+                    packet(
+                        0x10,
+                        mqtt_string("MQTT")
+                        + b"\x04\x02\x00\x00"
+                        + mqtt_string(HEALTHCHECK_CLIENT_ID),
+                    )
+                )
+                header, body = read_frame(conn, 1, bytearray())
+                if packet(header, body) != successful_connack(4):
+                    raise RuntimeError("MQTT healthcheck did not receive a successful CONNACK")
+                conn.sendall(packet(0xE0, b""))
 
 
 class Configuration:
@@ -301,18 +354,17 @@ def serve_both(args):
 
 
 def main():
-    """Dispatch configured services; healthcheck tests TCP reachability only.
+    """Dispatch configured services; healthcheck tests local TLS and protocol response.
 
-    A passing healthcheck does not prove robot connectivity, TLS trust or API
+    A passing healthcheck does not prove robot connectivity, robot TLS trust or database
     health. SIGTERM exits through normal cleanup. ACME mode supervises children;
     supplied-PEM mode invokes the daemon in this process.
     """
     args = parse_arguments()
     config = Configuration(args)
     if args.service == "healthcheck":
-        host = "127.0.0.1" if config.bind == "0.0.0.0" else config.bind
-        with socket.create_connection((host, config.ports[args.check_service]), timeout=3):
-            return
+        healthcheck(config, args.check_service)
+        return
     os.umask(0o077)
     config.prepare_state()
     if args.service == "init":

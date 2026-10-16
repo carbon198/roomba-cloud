@@ -8,7 +8,7 @@ The one root bootstrap container only prepares volume ownership; actual services
 run as the image's non-root user with read-only roots and no capabilities.
 
 Checks: native TLS MQTT CONNECT/PING, bearer HTTPS, persisted MQTT telemetry
-visible through HTTPS, shared token/state, TCP healthchecks, abrupt MQTT crash
+visible through HTTPS, shared token/state, TLS/protocol healthchecks, abrupt MQTT crash
 and restart, and Linux /proc hook log forwarding. This is not Compose orchestration
 or a multi-physical-robot/load test. Rootless Podman passed on 2026-10-15;
 Docker Engine/Compose runtime and real ACME issuance remain deployment-side trials.
@@ -207,7 +207,7 @@ def main():
             )
             created.append(name)
             wait_for(name, CHECK_MQTT if service == "mqtt" else CHECK_HTTPS)
-            run(
+            probe = run(
                 "exec",
                 name,
                 "python",
@@ -217,6 +217,9 @@ def main():
                 "--check-service",
                 service,
             )
+            assert not probe.stdout and not probe.stderr, probe
+            logs = run("logs", name)
+            assert "roomba-cloud-healthcheck" not in logs.stdout + logs.stderr
         hook_check = """
 import os, subprocess, sys
 env = dict(os.environ, ROOMBA_ACME_LOG_PID=str(os.getpid()),

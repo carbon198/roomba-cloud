@@ -31,7 +31,7 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     healthcheck:
-      # TCP reachability only, not robot online/auth/TLS health. ACME may still be waiting.
+      # Local TLS + MQTT response, not robot/database health. ACME may still be waiting.
       test: ["CMD", "python", "-m", "deployment.docker_entrypoint", "healthcheck", "--check-service", "mqtt"]
       interval: 30s
       timeout: 5s
@@ -59,6 +59,7 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     healthcheck:
+      # TLS + GET /healthz; no customer token or database access.
       test: ["CMD", "python", "-m", "deployment.docker_entrypoint", "healthcheck", "--check-service", "https"]
       interval: 30s
       timeout: 5s
