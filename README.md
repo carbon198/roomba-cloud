@@ -334,3 +334,16 @@ For cleaning controls and day-to-day automation, install
 [Roomba Local for Home Assistant](https://github.com/carbon198/ha-roomba-local)
 and follow its setup instructions. Use the emulator's HTTPS address, customer
 key, and the robot ID shown on the dashboard.
+
+## Reconnecting to Roomba's Cloud
+
+If you want to reconnect your Roomba to the manufacturer's cloud, simply follow the
+Change Wi-Fi process in the Roomba Home app. Click your robot -> Robot Settings ->
+Change Wi-Fi.
+
+## FAQ
+
+**Q:** Will this wipe my Robot? **A:** No, the provisioning is the same as the Roomba Home app's Change Wi-Fi feature. It does not wipe the robot
+**Q:** Can I use my existing maps? **A:** Yes please do, the emulator will pull them from the robot automatically
+**Q:** Should I block the Roomba's internet? **A:** I do, and you probably should. I can't guarantee they won't block this provisioning process in the future.
+**Q:** Can this brick the robot? **A:** No not to my knowledge, we aren't flashing the firmware. Using the map editor always entails some risk you might lose or corrupt your maps, but that's the extent of the risk.
