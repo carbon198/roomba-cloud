@@ -190,7 +190,7 @@ Other settings can remain at their defaults.
 #### Storage
 
 | Storage | Mount inside container | Access |
-|---|---|---|---|
+|---|---|---|
 | Roomba Data/Maps | `/data` | Read/write |
 | DNS challenge directory (optional for sharing with an updater) | `/data/dns-challenges` | Read/write |
 | Supplied certificate directory (not needed for built-in ACME) | `/certs` | Read-only |
