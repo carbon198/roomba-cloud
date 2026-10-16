@@ -29,6 +29,7 @@ Firmware hashes and other address provenance are recorded in room_edits.
 """
 
 import argparse
+import ipaddress
 import base64
 import contextlib
 import json
@@ -683,11 +684,18 @@ def handle(
     command session closes the old session; cleanup must remove only the old
     instance, never disconnect a newer connection using the same client ID.
     """
+    from roomba_cloud.server import HEALTHCHECK_CLIENT_ID
+
+    def log_handshake():
+        log("connection", peer=peer[0], port=peer[1])
+        log("client_hello", peer=peer[0], **parse_client_hello(hello))
+        log("handshake_ok", peer=peer[0], **handshake)
+
     try:
         raw.settimeout(timeout)
+        hello = None
         try:
             hello = raw.recv(4096, socket.MSG_PEEK)
-            log("client_hello", peer=peer[0], **parse_client_hello(hello))
             if client_auth:
                 cert, key, bridge = client_auth
                 raw.setblocking(True)
@@ -708,13 +716,34 @@ def handle(
                 conn = context.wrap_socket(raw, server_side=True)
                 handshake = {"tls": conn.version(), "cipher": conn.cipher()[0]}
         except (OSError, ProtocolError, ValueError) as exc:
+            log("connection", peer=peer[0], port=peer[1])
+            if hello is not None:
+                log("client_hello", peer=peer[0], **parse_client_hello(hello))
             log("handshake_failed", peer=peer[0], error=str(exc))
             return
         with conn:
-            log("handshake_ok", peer=peer[0], **handshake)
+            handshake_logged = False
             try:
                 buffer = bytearray()
                 metadata = read_connect(conn, timeout, buffer)
+                if (
+                    ipaddress.ip_address(peer[0]).is_loopback
+                    and metadata["client_id"] == HEALTHCHECK_CLIENT_ID
+                    and metadata["protocol_version"] == 4
+                    and metadata["clean_session_or_start"]
+                    and not metadata["will_present"]
+                    and not metadata["username_present"]
+                    and not metadata["password_present"]
+                    and (observe_seconds is not None or shadows is not None)
+                ):
+                    conn.sendall(successful_connack(4))
+                    if read_frame(conn, timeout, buffer) != (0xE0, b""):
+                        raise ProtocolError(
+                            "Healthcheck must disconnect without sending robot data"
+                        )
+                    return
+                log_handshake()
+                handshake_logged = True
                 log("mqtt_connect", peer=peer[0], **metadata)
                 if observe_seconds is not None or shadows is not None:
                     conn.sendall(successful_connack(metadata["protocol_version"]))
@@ -771,6 +800,8 @@ def handle(
                         meaning="diagnostic probe only; login not accepted",
                     )
             except (OSError, ProtocolError, sqlite3.Error, ValueError) as exc:
+                if not handshake_logged:
+                    log_handshake()
                 log("mqtt_probe_failed", peer=peer[0], error=str(exc))
     finally:
         raw.close()
@@ -903,7 +934,6 @@ def main():
         )
         while True:
             raw, peer = listener.accept()
-            log("connection", peer=peer[0], port=peer[1])
             threading.Thread(
                 target=handle,
                 args=(

@@ -384,6 +384,9 @@ def cloud_handler():
             """Dispatch assets, token PUT exclusions and authenticated APIs before diagnostics."""
             self.connection.settimeout(10)
             path = urlsplit(self.path).path
+            if path == "/healthz":
+                self.reply(200 if self.command == "GET" else 405)
+                return
             from roomba_cloud.web.dashboard import ASSETS
 
             if path in ASSETS:

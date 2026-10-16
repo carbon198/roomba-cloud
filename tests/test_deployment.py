@@ -23,7 +23,7 @@ import sys
 import tempfile
 import threading
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 from concurrent.futures import ThreadPoolExecutor
 
 import roomba_cloud.cloud_http as cloud_http
@@ -33,6 +33,8 @@ from roomba_cloud.robot_mqtt import mqtt_string, packet
 from roomba_cloud.server import (
     Configuration,
     create_customer_token,
+    healthcheck,
+    HEALTHCHECK_CLIENT_ID,
     main,
     parse_arguments,
     serve_both,
@@ -351,13 +353,65 @@ class ConfigurationTests(unittest.TestCase):
                     "sys.argv",
                     ["server.py", "healthcheck", *self.flags(directory), "--check-service", "mqtt"],
                 ),
-                patch("roomba_cloud.server.socket.create_connection") as connect,
+                patch("roomba_cloud.server.healthcheck") as check,
                 patch.object(Configuration, "prepare_state") as prepare,
             ):
                 main()
-            connect.assert_called_once_with(("127.0.0.1", 8883), timeout=3)
+            self.assertEqual(check.call_args.args[1], "mqtt")
             prepare.assert_not_called()
             self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_healthcheck_rejects_bad_protocol_responses(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Configuration(self.config(directory))
+            for service, response in (
+                ("https", b"HTTP/1.1 503 Unavailable\r\nContent-Length: 0\r\n\r\n"),
+                ("https", b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\nx"),
+                ("mqtt", mqtt_probe.unavailable_connack(4)),
+                ("mqtt", packet(0xD0, b"")),
+            ):
+                with self.subTest(service=service, response=response):
+                    context = MagicMock()
+                    conn = context.wrap_socket.return_value.__enter__.return_value
+                    conn.recv.return_value = response
+                    conn.makefile.return_value = io.BytesIO(response)
+                    with (
+                        patch(
+                            "roomba_cloud.server.ssl.create_default_context", return_value=context
+                        ),
+                        patch("roomba_cloud.server.socket.create_connection"),
+                        self.assertRaises(RuntimeError),
+                    ):
+                        context.verify_flags = 0
+                        healthcheck(config, service)
+
+    def test_healthcheck_uses_managed_certificate_and_ipv6_loopback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Configuration(
+                self.config(
+                    directory,
+                    tls_cert=None,
+                    tls_key=None,
+                    acme_email="test@example.com",
+                    acme_agree_tos=True,
+                )
+            )
+            config.bind = "::"
+            context = MagicMock()
+            context.verify_flags = 0
+            conn = context.wrap_socket.return_value.__enter__.return_value
+            conn.recv.return_value = mqtt_probe.successful_connack(4)
+            with (
+                patch(
+                    "roomba_cloud.server.ssl.create_default_context", return_value=context
+                ) as tls,
+                patch("roomba_cloud.server.socket.create_connection") as connect,
+            ):
+                healthcheck(config, "mqtt")
+            tls.assert_called_once_with(
+                cafile=str(config.data_dir / "acme/config/live/roomba.example.com/fullchain.pem")
+            )
+            connect.assert_called_once_with(("::1", 8883), timeout=1)
 
     def test_cli_token_path_preserves_symlink_rejection(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -478,6 +532,190 @@ class MultiRobotNetworkTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.directory.cleanup()
+
+    def health_config(self, service, port):
+        return Configuration(
+            parse_arguments(
+                [
+                    "healthcheck",
+                    "--public-url",
+                    "https://localhost",
+                    "--tls-cert",
+                    str(self.cert),
+                    "--tls-key",
+                    str(self.key),
+                    "--data-dir",
+                    str(Path(self.directory.name) / "unused"),
+                    "--" + service + "-port",
+                    str(port),
+                ]
+            )
+        )
+
+    def test_https_healthcheck_is_quiet_unauthenticated_and_does_not_use_storage(self):
+        server = cloud_http.cloud_server()(("127.0.0.1", 0), cloud_http.cloud_handler())
+        server.tls_context = mqtt_probe.tls_context(self.cert, self.key)
+        server.uploads = None
+        server.customer_auth = Mock()
+        thread = threading.Thread(target=server.serve_forever)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            thread.start()
+            try:
+                healthcheck(self.health_config("https", server.server_port), "https")
+                conn = http.client.HTTPSConnection(
+                    "127.0.0.1",
+                    server.server_port,
+                    context=self.client_context,
+                    timeout=3,
+                )
+                conn.request("POST", "/healthz")
+                response = conn.getresponse()
+                self.assertEqual(response.status, 405)
+                response.read()
+                conn.close()
+                server.customer_auth.accepts.assert_not_called()
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(5)
+        self.assertEqual(output.getvalue(), "")
+
+    def test_mqtt_healthcheck_is_quiet_and_has_no_robot_side_effects(self):
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            listener.settimeout(3)
+            context = mqtt_probe.tls_context(self.cert, self.key)
+            shadows, commands, capture, uploads = Mock(), Mock(), Mock(), Mock()
+
+            def serve():
+                raw, peer = listener.accept()
+                mqtt_probe.handle(
+                    raw,
+                    peer,
+                    context,
+                    shadows=shadows,
+                    commands=commands,
+                    capture=capture,
+                    map_uploads=uploads,
+                )
+
+            thread = threading.Thread(target=serve)
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                thread.start()
+                try:
+                    healthcheck(self.health_config("mqtt", listener.getsockname()[1]), "mqtt")
+                finally:
+                    thread.join(5)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(output.getvalue(), "")
+            for dependency in (shadows, commands, capture, uploads):
+                self.assertEqual(dependency.mock_calls, [])
+
+    def test_mqtt_healthcheck_rejects_robot_data_and_logs_failure(self):
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            context = mqtt_probe.tls_context(self.cert, self.key)
+            shadows = Mock()
+
+            def serve():
+                raw, peer = listener.accept()
+                mqtt_probe.handle(raw, peer, context, shadows=shadows)
+
+            thread = threading.Thread(target=serve)
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                thread.start()
+                try:
+                    with socket.create_connection(listener.getsockname(), timeout=3) as raw:
+                        with self.client_context.wrap_socket(
+                            raw, server_hostname="localhost"
+                        ) as conn:
+                            conn.sendall(
+                                packet(
+                                    0x10,
+                                    mqtt_string("MQTT")
+                                    + b"\x04\x02\x00\x00"
+                                    + mqtt_string(HEALTHCHECK_CLIENT_ID),
+                                )
+                            )
+                            self.assertEqual(
+                                mqtt_probe.read_frame(conn, 3, bytearray()), (0x20, b"\0\0")
+                            )
+                            conn.sendall(packet(0xC0, b""))
+                            self.assertEqual(conn.recv(1), b"")
+                finally:
+                    thread.join(5)
+            self.assertFalse(thread.is_alive())
+            self.assertIn("mqtt_probe_failed", output.getvalue())
+            self.assertEqual(shadows.mock_calls, [])
+
+    def test_mqtt_healthcheck_identity_is_not_special_for_remote_peers(self):
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            context = mqtt_probe.tls_context(self.cert, self.key)
+            shadows = Mock()
+
+            def serve():
+                raw, peer = listener.accept()
+                mqtt_probe.handle(raw, ("192.0.2.1", peer[1]), context, shadows=shadows)
+
+            thread = threading.Thread(target=serve)
+            with contextlib.redirect_stdout(io.StringIO()), patch.object(mqtt_probe, "observe"):
+                thread.start()
+                try:
+                    with socket.create_connection(listener.getsockname(), timeout=3) as raw:
+                        with self.client_context.wrap_socket(
+                            raw, server_hostname="localhost"
+                        ) as conn:
+                            conn.sendall(
+                                packet(
+                                    0x10,
+                                    mqtt_string("MQTT")
+                                    + b"\x04\x02\x00\x00"
+                                    + mqtt_string(HEALTHCHECK_CLIENT_ID),
+                                )
+                            )
+                            self.assertEqual(
+                                mqtt_probe.read_frame(conn, 3, bytearray()), (0x20, b"\0\0")
+                            )
+                finally:
+                    thread.join(5)
+            self.assertFalse(thread.is_alive())
+            shadows.start_session.assert_called_once_with(
+                HEALTHCHECK_CLIENT_ID,
+                30,
+                peer_ip="192.0.2.1",
+            )
+            shadows.end_session.assert_called_once()
+
+    def test_healthcheck_detects_tls_listener_stall(self):
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            with self.assertRaises(TimeoutError):
+                healthcheck(self.health_config("https", listener.getsockname()[1]), "https")
+
+    def test_healthcheck_validates_hostname(self):
+        server = cloud_http.cloud_server()(("127.0.0.1", 0), cloud_http.cloud_handler())
+        server.tls_context = mqtt_probe.tls_context(self.cert, self.key)
+        server.uploads = None
+        thread = threading.Thread(target=server.serve_forever)
+        with contextlib.redirect_stdout(io.StringIO()):
+            thread.start()
+            try:
+                config = self.health_config("https", server.server_port)
+                config.hostname = "wrong.example.com"
+                with self.assertRaises(ssl.SSLCertVerificationError):
+                    healthcheck(config, "https")
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(5)
 
     def test_https_accepts_unconfigured_robots_and_upload_tokens_from_any_peer(self):
         from roomba_cloud.maps.upload import MapUploadService
