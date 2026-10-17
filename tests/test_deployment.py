@@ -22,6 +22,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import MagicMock, Mock, patch
 from concurrent.futures import ThreadPoolExecutor
@@ -580,6 +581,78 @@ class MultiRobotNetworkTests(unittest.TestCase):
                 server.server_close()
                 thread.join(5)
         self.assertEqual(output.getvalue(), "")
+
+    def test_blocked_receiver_maintenance_does_not_block_https_or_shutdown(self):
+        entered, release, offline = threading.Event(), threading.Event(), threading.Event()
+        workers = set()
+
+        def heartbeat(online=True):
+            workers.add(threading.get_ident())
+            if online:
+                entered.set()
+                release.wait(5)
+            else:
+                offline.set()
+
+        server = cloud_http.cloud_server()(("127.0.0.1", 0), cloud_http.cloud_handler())
+        server.tls_context = mqtt_probe.tls_context(self.cert, self.key)
+        server.uploads = Mock(heartbeat=Mock(side_effect=heartbeat))
+        server.maintenance_join_timeout = 0.05
+        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01})
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            thread.start()
+            try:
+                self.assertTrue(entered.wait(2))
+                for _ in range(3):
+                    healthcheck(self.health_config("https", server.server_port), "https")
+                self.assertEqual(server.uploads.heartbeat.call_count, 1)
+                start = time.monotonic()
+                server.shutdown()
+                thread.join(1)
+                self.assertFalse(thread.is_alive())
+                self.assertLess(time.monotonic() - start, 1)
+                self.assertIn("map_receiver_maintenance_stopping", output.getvalue())
+            finally:
+                release.set()
+                server.shutdown()
+                server.server_close()
+                thread.join(2)
+                self.assertTrue(offline.wait(2))
+        self.assertEqual(len(workers), 1)
+        self.assertEqual(server.uploads.heartbeat.call_count, 2)
+        server.uploads.heartbeat.assert_called_with(False)
+
+    def test_receiver_maintenance_retries_errors_and_stops_cleanly(self):
+        failed, recovered, offline = threading.Event(), threading.Event(), threading.Event()
+
+        def heartbeat(online=True):
+            if not online:
+                offline.set()
+                raise sqlite3.OperationalError("offline locked")
+            if not failed.is_set():
+                failed.set()
+                raise sqlite3.OperationalError("locked")
+            recovered.set()
+
+        server = cloud_http.cloud_server()(("127.0.0.1", 0), cloud_http.cloud_handler())
+        server.uploads = Mock(heartbeat=Mock(side_effect=heartbeat))
+        server.maintenance_interval = 0.05
+        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01})
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            thread.start()
+            try:
+                self.assertTrue(recovered.wait(2))
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(2)
+        self.assertFalse(thread.is_alive())
+        self.assertTrue(offline.is_set())
+        self.assertIn("map_receiver_maintenance_failed", output.getvalue())
+        self.assertIn("map_receiver_offline_failed", output.getvalue())
+        calls = server.uploads.heartbeat.call_count
+        time.sleep(0.1)
+        self.assertEqual(server.uploads.heartbeat.call_count, calls)
 
     def test_mqtt_healthcheck_is_quiet_and_has_no_robot_side_effects(self):
         with socket.socket() as listener:

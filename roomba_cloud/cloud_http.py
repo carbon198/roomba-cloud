@@ -967,12 +967,7 @@ def cloud_handler():
 def cloud_server():
     from roomba_cloud.maps.upload import MapUploadServer
 
-    class CloudHTTPServer(MapUploadServer):
-        def service_actions(self):
-            if self.uploads is not None:
-                self.uploads.heartbeat()
-
-    return CloudHTTPServer
+    return MapUploadServer
 
 
 def main():
@@ -1076,8 +1071,6 @@ def main():
                 if args.customer_shadow_db
                 else None
             )
-            if uploads is not None:
-                uploads.heartbeat()
             log(
                 "cloud_http_listening",
                 bind=args.bind,
@@ -1089,11 +1082,7 @@ def main():
                 max_bytes=args.map_max_bytes,
                 max_total_bytes=args.map_max_total_bytes,
             )
-            try:
-                server.serve_forever()
-            finally:
-                if uploads is not None:
-                    uploads.heartbeat(False)
+            server.serve_forever()
 
 
 if __name__ == "__main__":
