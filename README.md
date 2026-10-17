@@ -10,7 +10,7 @@ Roomba Cloud is a local replacement for the cloud services used
 by iRobot V4 robots. It lets a compatible robot connect to your own server,
 keeping its telemetry and maps on your network and making them available to
 [Roomba Local for Home Assistant](https://github.com/carbon198/ha-roomba-local).
-No custom robot firmware is required.
+No custom robot firmware is required; we provision the robot over Bluetooth.
 
 This is an independent project, not affiliated with iRobot.
 
@@ -38,7 +38,7 @@ Internet.**
 
 ### 1. Prepare DNS 
 
-Configure DNS so that `roomba.example.com` resolves to your Docker server's LAN
+Configure DNS so that `roomba.example.com` (your domain) resolves to your Docker server's LAN
 address from the robot's network. Keep the default published ports, 443 and
 8883, available. This A record can be local, it doesn't need to be on public DNS.
 
@@ -95,6 +95,9 @@ You will need to add a TXT to your DNS provider record after starting the contai
 
 **Option B: Supply an existing certificate**
 
+<details>
+  <summary>Click to Expand</summary>
+
 Copy the full certificate chain and matching unencrypted private key into
 `certs/fullchain.pem` and `certs/privkey.pem`.
 
@@ -114,6 +117,8 @@ sudo chmod 600 certs/fullchain.pem certs/privkey.pem
 ```
 
 User-supplied certificate and ACME are mutually exclusive.
+
+</details>
 
 #### 3. Download and start the server
 
@@ -136,6 +141,9 @@ attempt times out, follow the logs for the next attempt and its current value.
 
 ##### Automating DNS updates with another app (optional)
 
+<details>
+  <summary>Click to Expand</summary>
+
 The HTTPS service also writes `/data/dns-challenges/challenge.json`:
 
 ```json
@@ -148,6 +156,8 @@ details.
 Have your DNS updater read `/challenges/challenge.json`, add the TXT value
 through your DNS provider. When the cert is renewed, `challenge.json` will be deleted.
 
+</details>
+
 #### 4. Get the customer token
 
 The customer token is your login credential and is generated automatically on first startup
@@ -156,11 +166,14 @@ The customer token is your login credential and is generated automatically on fi
 docker compose exec https cat /data/customer-token.txt
 ```
 
-Paste the key into the web login page. Save it somewhere; the same key is also
-used by Home Assistant.
+Paste the key into the web login page at your `PUBLIC_URL`. Save it somewhere; the same key is also
+used by Home Assistant to authenticate.
 
 ### Manual container setup
 
+<details>
+  <summary>Click to Expand</summary>
+  
 | Setting | Value |
 |---|---|
 | Image repository | `ghcr.io/carbon198/roomba-cloud` |
@@ -211,8 +224,13 @@ cat /data/customer-token.txt
 ```
 
 Use that customer key to sign in, then continue to Bluetooth provisioning.
+  
+</details>
 
 ### Native Python installation (without Docker)
+
+<details>
+  <summary>Click to Expand</summary>
 
 Download the source first:
 
@@ -250,6 +268,8 @@ sudo .venv/bin/python -m roomba_cloud https \
 
 Retrieve the key with `sudo cat ./data/customer-token.txt`. These commands run
 in the foreground; arrange service supervision yourself if needed.
+
+</details>
 
 ## Provision the robot over Bluetooth
 
@@ -342,11 +362,18 @@ Change Wi-Fi process in the Roomba Home app. Click your robot -> Robot Settings 
 Change Wi-Fi.
 
 ## FAQ
+**Q:** Why can't we do all this in a Home Assistant App? **A:** I would like to, but I haven't been able to coerce the Roomba to connect on non-standard HTTPS and MQTT ports. Most people already use 443 and 8883 on Home Assistant and the Roomba does some weird MQTT stuff that Mosquitto doesn't handle. 
 
-**Q:** Will this wipe my Robot? **A:** No, the provisioning is the same as the Roomba Home app's Change Wi-Fi feature. It does not wipe the robot
+**Q:** Will this wipe my Roomba? **A:** No, the provisioning is the same as the Roomba Home app's Change Wi-Fi feature. It does not wipe the robot
 
 **Q:** Can I use my existing maps? **A:** Yes please do, the emulator will pull them from the robot automatically
 
 **Q:** Should I block the Roomba's internet? **A:** I do, and you probably should. I can't guarantee they won't block this provisioning process in the future.
 
-**Q:** Can this brick the robot? **A:** No not to my knowledge, we aren't flashing the firmware. Using the map editor always entails some risk you might lose or corrupt your maps, but that's the extent of the risk.
+**Q:** Can this brick the Roomba? **A:** No not to my knowledge, we aren't flashing the firmware. Using the map editor always entails some risk you might lose or corrupt your maps, but that's the extent of the risk.
+
+**Q:** Do I need to backup the `/data` folder? **A:** Not really. All the historical state will be in Home Assistant. If you need to setup this project on a new server you can reprovision the robot, repoint Home Assistant and everything will continue working as normal.
+
+**Q:** Can the emulator restore maps to a robot? **A:** I've been researching that but I haven't figured out how to get the robot to download them as yet.
+
+**Q:** Do V4 Roombas not have a local MQTT server? **A:** They do, but it isn't for local robot control. It only turns on when sending it certain bluetooth commands and it appears to be for firmware provisioning. One promising thing about that is it looks like you can upload new firmware signing keys, so custom firmware for these robots may be possible in the future. 
