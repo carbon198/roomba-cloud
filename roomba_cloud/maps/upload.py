@@ -33,6 +33,7 @@ import secrets
 import sqlite3
 import stat
 import tarfile
+import threading
 import time
 import zlib
 from urllib.parse import urlsplit
@@ -445,10 +446,58 @@ class MapUploadServer(ThreadingHTTPServer):
     UNKNOWN_CA can mean server-chain rejection; timeouts/resets/non-TLS traffic
     have other causes. Log structured OpenSSL/OS fields, not request secrets or
     raw exception strings.
+
+    One maintenance worker owns receiver heartbeats/pruning, waiting five seconds
+    between attempts rather than committing on every accept-loop iteration.
+    Slow/failed storage leaves the existing 15-second readiness lease to expire;
+    TLS and storage-independent routes can still respond. Shutdown signals the
+    worker and waits briefly, since a kernel filesystem sync cannot be cancelled.
+    The worker marks the receiver offline after any in-flight heartbeat returns.
     """
 
     daemon_threads = True
     block_on_close = False
+    maintenance_interval = 5
+    maintenance_join_timeout = 1
+
+    def serve_forever(self, poll_interval=0.5):
+        """Keep storage waits outside the accept loop, with no overlapping maintenance."""
+        uploads = self.uploads
+        if uploads is None:
+            return super().serve_forever(poll_interval)
+        stop = threading.Event()
+
+        def maintain():
+            try:
+                while not stop.is_set():
+                    try:
+                        uploads.heartbeat()
+                    except (OSError, sqlite3.Error, ValueError) as exc:
+                        log(
+                            "map_receiver_maintenance_failed",
+                            error_type=type(exc).__name__,
+                            recovery="retry on next receiver heartbeat",
+                        )
+                    if stop.wait(self.maintenance_interval):
+                        break
+            finally:
+                try:
+                    uploads.heartbeat(False)
+                except (OSError, sqlite3.Error, ValueError) as exc:
+                    log("map_receiver_offline_failed", error_type=type(exc).__name__)
+
+        worker = threading.Thread(target=maintain, name="map-receiver-maintenance", daemon=True)
+        worker.start()
+        try:
+            return super().serve_forever(poll_interval)
+        finally:
+            stop.set()
+            worker.join(self.maintenance_join_timeout)
+            if worker.is_alive():
+                log(
+                    "map_receiver_maintenance_stopping",
+                    reason="storage operation still pending; readiness expires automatically",
+                )
 
     def get_request(self):
         raw, peer = self.socket.accept()
@@ -470,7 +519,7 @@ class MapUploadServer(ThreadingHTTPServer):
             raise
 
     def service_actions(self):
-        self.uploads.heartbeat()
+        pass
 
     def handle_error(self, request, client_address):
         log("map_upload_handler_failed", message="Check receiver storage and database locally")
