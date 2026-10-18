@@ -416,6 +416,97 @@ def topic_matches(subscription, topic):
     return len(filters) == len(levels)
 
 
+class SessionMaintenance:
+    """Coalesce session activity off all MQTT readers in one storage worker.
+
+    Packet receipt times, not delayed flush times, determine freshness. Disconnect
+    cleanup runs after any in-flight renewal; session IDs isolate reconnects.
+    Dirty sessions flush every five seconds; failures are logged and retried.
+    Storage stalls can still expire persisted leases. Startup registration and
+    application persistence remain synchronous; shutdown waits at most one second.
+    """
+
+    interval = 5
+    join_timeout = 1
+
+    def __init__(self, shadows):
+        self.shadows = shadows
+        self.lock = threading.Lock()
+        self.wake = threading.Event()
+        self.stopping = False
+        self.pending = {}
+        self.ended = set()
+        self.worker = threading.Thread(target=self._run, daemon=True)
+
+    def record(self, session, lease, data_received=False):
+        now = time.time()
+        with self.lock:
+            previous = self.pending.get(session)
+            data_at = previous[2] if previous else None
+            if data_received:
+                data_at = now
+            self.pending[session] = (lease, now, data_at)
+
+    def end(self, session):
+        with self.lock:
+            self.pending.pop(session, None)
+            self.ended.add(session)
+        self.wake.set()
+
+    def _flush(self):
+        with self.lock:
+            pending, self.pending = self.pending, {}
+            ended, self.ended = self.ended, set()
+        for session, (lease, observed_at, data_at) in pending.items():
+            try:
+                self.shadows.touch_session(
+                    session, lease, observed_at=observed_at, data_received_at=data_at
+                )
+            except (OSError, sqlite3.Error, ValueError) as exc:
+                log("mqtt_session_maintenance_failed", operation="touch", error=str(exc))
+                with self.lock:
+                    if session not in self.ended and session not in ended:
+                        current = self.pending.get(session)
+                        if current is None:
+                            self.pending[session] = (lease, observed_at, data_at)
+                        elif data_at is not None:
+                            self.pending[session] = (
+                                current[0],
+                                current[1],
+                                max(data_at, current[2]) if current[2] is not None else data_at,
+                            )
+        for session in ended:
+            try:
+                self.shadows.end_session(session)
+            except (OSError, sqlite3.Error, ValueError) as exc:
+                log("mqtt_session_maintenance_failed", operation="end", error=str(exc))
+                with self.lock:
+                    self.ended.add(session)
+
+    def _run(self):
+        while True:
+            self.wake.wait(self.interval)
+            self.wake.clear()
+            self._flush()
+            with self.lock:
+                if self.stopping:
+                    break
+        # An end can arrive while the final renewal is blocked in storage.
+        self._flush()
+
+    def __enter__(self):
+        self.worker.start()
+        return self
+
+    def __exit__(self, *args):
+        with self.lock:
+            self.stopping = True
+        self.wake.set()
+        self.worker.join(self.join_timeout)
+        if self.worker.is_alive():
+            log("mqtt_session_maintenance_stopping", message="Storage operation still pending")
+
+
 def observe(
     conn,
     peer,
@@ -428,6 +519,7 @@ def observe(
     map_response_delay_ms=0,
     session=None,
     command_session=None,
+    maintenance=None,
 ):
     """Pump one connection; transport ACK precedes application response work.
 
@@ -460,7 +552,7 @@ def observe(
             header, body, metadata["protocol_version"]
         )
         if session is not None:
-            shadows.touch_session(session, idle + 20, data_received=event == "mqtt_publish")
+            maintenance.record(session, idle + 20, data_received=event == "mqtt_publish")
         log(event, peer=peer, **fields)
         if event == "mqtt_puback" and command_session is not None:
             command_session.acknowledge(fields["packet_id"], fields["reason_code"])
@@ -677,6 +769,7 @@ def handle(
     map_uploads=None,
     map_response_delay_ms=0,
     commands=None,
+    maintenance=None,
 ):
     """Own TLS/MQTT/session lifetime for one peer, releasing its lease on exit.
 
@@ -772,25 +865,32 @@ def handle(
                             conn, metadata["protocol_version"], metadata["client_id"]
                         )
                         commands.register(metadata["client_id"], command_session)
-                    try:
-                        observe(
-                            conn,
-                            peer[0],
-                            metadata,
-                            buffer,
-                            observe_seconds,
-                            capture,
-                            shadows,
-                            map_uploads,
-                            map_response_delay_ms,
-                            session,
-                            command_session,
-                        )
-                    finally:
-                        if command_session is not None:
-                            commands.remove(metadata["client_id"], command_session)
-                        if session is not None:
-                            shadows.end_session(session)
+                    manager = (
+                        SessionMaintenance(shadows)
+                        if session is not None and maintenance is None
+                        else contextlib.nullcontext(maintenance)
+                    )
+                    with manager as activity:
+                        try:
+                            observe(
+                                conn,
+                                peer[0],
+                                metadata,
+                                buffer,
+                                observe_seconds,
+                                capture,
+                                shadows,
+                                map_uploads,
+                                map_response_delay_ms,
+                                session,
+                                command_session,
+                                activity,
+                            )
+                        finally:
+                            if command_session is not None:
+                                commands.remove(metadata["client_id"], command_session)
+                            if session is not None:
+                                activity.end(session)
                 else:
                     conn.sendall(unavailable_connack(metadata["protocol_version"]))
                     log(
@@ -916,6 +1016,9 @@ def main():
                 mode="0600",
                 warning="contains private robot payloads; do not share unreviewed",
             )
+        maintenance = (
+            resources.enter_context(SessionMaintenance(shadows)) if shadows is not None else None
+        )
         listener.listen(16)
         log(
             "mqtt_probe_listening",
@@ -948,6 +1051,7 @@ def main():
                     map_uploads,
                     args.map_response_delay_ms,
                     commands,
+                    maintenance,
                 ),
                 daemon=True,
             ).start()
