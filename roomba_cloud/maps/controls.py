@@ -6,6 +6,7 @@ malformed persisted shapes and database failures raise explicit errors. This
 guard reads the latest persisted report, not a physical robot probe, and does not
 claim an authoritative idle loaded-map identity. The browser adds online/UI
 gating, but server checks here remain mandatory before payload construction.
+Mapping runs use the stricter docked_only guard: phase charge and cycle none.
 """
 
 import contextlib
@@ -21,7 +22,9 @@ class MapControlState(TypedDict):
     reason: str
 
 
-def map_control_state(database: str | PathLike[str], robot_id: str) -> MapControlState:
+def map_control_state(
+    database: str | PathLike[str], robot_id: str, *, docked_only: bool = False
+) -> MapControlState:
     with contextlib.closing(
         sqlite3.connect(Path(database).resolve().as_uri() + "?mode=ro", uri=True, timeout=10)
     ) as db:
@@ -42,13 +45,17 @@ def map_control_state(database: str | PathLike[str], robot_id: str) -> MapContro
     allowed = (
         isinstance(mission, dict)
         and mission.get("cycle") == "none"
-        and mission.get("phase") in ("charge", "stop", "idle")
+        and mission.get("phase") in (("charge",) if docked_only else ("charge", "stop", "idle"))
     )
     return {
         "allowed": allowed,
         "reason": ""
         if allowed
-        else "Map controls require a known idle robot with no active or paused mission.",
+        else (
+            "Mapping requires a docked robot with no active or paused mission."
+            if docked_only
+            else "Map controls require a known idle robot with no active or paused mission."
+        ),
     }
 
 

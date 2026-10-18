@@ -37,6 +37,64 @@ class FakeRobot:
 
 
 class CommandTests(unittest.TestCase):
+    def test_mapping_run_requires_docked_no_mission_and_live_subscription(self):
+        from roomba_cloud.shadow_service import ShadowService
+
+        robot = FakeRobot()
+        session = CommandSession(robot, 5, "a" * 32)
+        robot.session = session
+        request = {"robot_id": "a" * 32, "command": "train"}
+        with tempfile.TemporaryDirectory() as directory:
+            service = ShadowService(Path(directory) / "state.db")
+            registry = CommandRegistry(service.path)
+            with self.assertRaises(CommandError):
+                registry.execute(request)
+            registry.register("a" * 32, session)
+            session.subscriptions.add(session.topic)
+            topic = "$aws/things/" + "a" * 32 + "/shadow/name/ro-currentstate/update"
+            for mission in (
+                {},
+                {"phase": "idle", "cycle": "none"},
+                {"phase": "stop", "cycle": "none"},
+                {"phase": "run", "cycle": "train"},
+                {"phase": "charge", "cycle": "clean"},
+                {"phase": "pause", "cycle": "train"},
+            ):
+                service.respond(
+                    topic,
+                    json.dumps({"state": {"reported": {"cleanMissionStatus": mission}}}).encode(),
+                    "a" * 32,
+                )
+                with self.assertRaises(CommandError):
+                    registry.execute(request)
+            self.assertEqual(robot.payloads, [])
+            service.respond(
+                topic,
+                json.dumps(
+                    {
+                        "state": {
+                            "reported": {"cleanMissionStatus": {"phase": "charge", "cycle": "none"}}
+                        }
+                    }
+                ).encode(),
+                "a" * 32,
+            )
+            with patch("roomba_cloud.robot_commands.time.time", return_value=123):
+                self.assertEqual(
+                    registry.execute(request),
+                    {"delivery": "acknowledged", "execution": "unconfirmed"},
+                )
+            self.assertEqual(
+                robot.payloads,
+                [(session.topic, {"command": "train", "time": 123, "initiator": "localApp"})],
+            )
+            with self.assertRaises(CommandError):
+                registry.execute({**request, "operating_mode": 2})
+            session.close()
+            with self.assertRaises(CommandError):
+                registry.execute(request)
+            self.assertEqual(len(robot.payloads), 1)
+
     def test_ipc_response_shapes_are_validated_before_use(self):
         from unittest.mock import MagicMock
 

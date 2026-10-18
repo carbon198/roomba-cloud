@@ -224,7 +224,7 @@ class CommandRegistry:
             or set(request) != keys
             or not isinstance(request["command"], str)
             or request["command"]
-            not in COMMANDS | {"clean_segments", "set_setting", "live_map", "room_edit"}
+            not in COMMANDS | {"clean_segments", "set_setting", "live_map", "room_edit", "train"}
             or not isinstance(request["robot_id"], str)
             or not re.fullmatch(r"[0-9A-Fa-f]{32}", request["robot_id"])
         ):
@@ -263,6 +263,18 @@ class CommandRegistry:
                 )
             except ValueError as exc:
                 raise CommandError(str(exc)) from exc
+        if request["command"] == "train":
+            from roomba_cloud.maps.controls import map_control_state
+
+            def mapping_payload():
+                if self.shadow_db is None:
+                    raise CommandError("Robot state is unavailable")
+                state = map_control_state(self.shadow_db, request["robot_id"], docked_only=True)
+                if not state["allowed"]:
+                    raise CommandError(state["reason"])
+                return {"command": "train", "time": int(time.time()), "initiator": "localApp"}
+
+            return session.publish_once(session.topic, mapping_payload)
         if live_map:
             return session.publish_once(
                 session.live_map_topic,
@@ -384,7 +396,13 @@ def request_command(
     The eight-second IPC timeout exceeds the session's five-second ACK wait;
     neither timeout establishes that an already written action did not execute.
     """
-    if command not in COMMANDS | {"clean_segments", "set_setting", "live_map", "room_edit"}:
+    if command not in COMMANDS | {
+        "clean_segments",
+        "set_setting",
+        "live_map",
+        "room_edit",
+        "train",
+    }:
         raise CommandError("Unsupported robot command")
     request: dict[str, object] = {"robot_id": robot_id, "command": command}
     if command == "room_edit":
