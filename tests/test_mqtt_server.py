@@ -5,16 +5,149 @@ import json
 import os
 from pathlib import Path
 import socket
+import sqlite3
 import ssl
 import subprocess
 import tempfile
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import roomba_cloud.mqtt_server as probe
 from roomba_cloud.robot_mqtt import ProtocolError, mqtt_string, packet
 from roomba_cloud.cloud_http import make_cert
+
+
+class SessionMaintenanceTests(unittest.TestCase):
+    def test_blocked_storage_does_not_delay_ping_publish_or_command_ack(self):
+        entered, release, acknowledged = threading.Event(), threading.Event(), threading.Event()
+        shadows = Mock()
+        shadows.respond.return_value = None
+        shadows.touch_session.side_effect = lambda *a, **kw: (entered.set(), release.wait(5))
+        maintenance = probe.SessionMaintenance(shadows)
+        maintenance.interval = 0.01
+        maintenance.join_timeout = 0.02
+        server, client = socket.socketpair()
+        with server, client, contextlib.redirect_stdout(io.StringIO()), maintenance:
+            client.settimeout(1)
+            command = Mock(wraps=server)
+            command.subscriptions = set()
+            command.acknowledge = Mock(side_effect=lambda *a: acknowledged.set())
+            reader = threading.Thread(
+                target=probe.observe,
+                args=(
+                    server,
+                    "local",
+                    {"keepalive_seconds": 30, "protocol_version": 4, "client_id": "robot"},
+                    bytearray(),
+                    None,
+                ),
+                kwargs={
+                    "shadows": shadows,
+                    "session": "old",
+                    "maintenance": maintenance,
+                    "command_session": command,
+                },
+            )
+            reader.start()
+            try:
+                client.sendall(packet(0xC0, b""))
+                self.assertEqual(probe.read_frame(client, 1, bytearray()), (0xD0, b""))
+                self.assertTrue(entered.wait(1))
+                client.sendall(packet(0xC0, b""))
+                self.assertEqual(probe.read_frame(client, 1, bytearray()), (0xD0, b""))
+                client.sendall(packet(0x32, mqtt_string("unrelated") + b"\0\x01{}"))
+                self.assertEqual(probe.read_frame(client, 1, bytearray()), (0x40, b"\0\x01"))
+                client.sendall(packet(0x40, b"\0\x02"))
+                self.assertTrue(acknowledged.wait(1))
+                client.sendall(packet(0xE0, b""))
+                reader.join(1)
+                self.assertFalse(reader.is_alive())
+                self.assertEqual(shadows.touch_session.call_count, 1)
+                maintenance.end("old")
+                maintenance.__exit__()
+                self.assertTrue(maintenance.worker.is_alive())
+            finally:
+                release.set()
+                client.shutdown(socket.SHUT_RDWR)
+                reader.join(2)
+                maintenance.worker.join(2)
+        shadows.end_session.assert_called_once_with("old")
+        self.assertEqual(shadows.touch_session.call_count, 1)
+
+    def test_coalesces_activity_and_preserves_publication_timestamp(self):
+        shadows = Mock()
+        maintenance = probe.SessionMaintenance(shadows)
+        with patch.object(probe.time, "time", side_effect=[100, 101, 102]):
+            maintenance.record("session", 65, True)
+            maintenance.record("session", 65)
+            maintenance.record("session", 65)
+        maintenance._flush()
+        shadows.touch_session.assert_called_once_with(
+            "session", 65, observed_at=102, data_received_at=100
+        )
+        maintenance._flush()
+        self.assertEqual(shadows.touch_session.call_count, 1)
+
+    def test_failed_touch_retries_without_losing_newer_data(self):
+        shadows = Mock()
+        maintenance = probe.SessionMaintenance(shadows)
+
+        def fail(*args, **kwargs):
+            with patch.object(probe.time, "time", return_value=102):
+                maintenance.record("session", 65)
+            raise sqlite3.OperationalError("busy")
+
+        with patch.object(probe.time, "time", return_value=100):
+            maintenance.record("session", 65, True)
+        shadows.touch_session.side_effect = fail
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            maintenance._flush()
+        self.assertIn("mqtt_session_maintenance_failed", output.getvalue())
+        shadows.touch_session.side_effect = None
+        maintenance._flush()
+        self.assertEqual(
+            shadows.touch_session.call_args.kwargs, {"observed_at": 102, "data_received_at": 100}
+        )
+
+    def test_failed_cleanup_retries_and_does_not_renew_disconnected_session(self):
+        shadows = Mock()
+        maintenance = probe.SessionMaintenance(shadows)
+        maintenance.record("old", 65, True)
+        maintenance.end("old")
+        shadows.end_session.side_effect = sqlite3.OperationalError("busy")
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            maintenance._flush()
+        self.assertIn('"operation": "end"', output.getvalue())
+        shadows.end_session.side_effect = None
+        maintenance._flush()
+        shadows.touch_session.assert_not_called()
+        self.assertEqual(shadows.end_session.call_count, 2)
+        self.assertEqual(maintenance.ended, set())
+
+    def test_deferred_timestamps_and_old_session_cleanup_preserve_new_session(self):
+        from roomba_cloud.shadow_service import ShadowService
+
+        with tempfile.TemporaryDirectory() as directory:
+            service = ShadowService(Path(directory) / "state.db")
+            with patch("roomba_cloud.shadow_service.time.time", return_value=50):
+                old = service.start_session("robot", 65, "127.0.0.1")
+                new = service.start_session("robot", 65, "127.0.0.1")
+            service.touch_session(new, 65, observed_at=200, data_received_at=190)
+            service.touch_session(old, 65, observed_at=100, data_received_at=90)
+            service.end_session(old)
+            service.touch_session(old, 65, observed_at=300, data_received_at=300)
+            with contextlib.closing(sqlite3.connect(service.path)) as db:
+                self.assertEqual(
+                    db.execute("SELECT session, expires FROM mqtt_sessions").fetchall(),
+                    [(new, 265)],
+                )
+                self.assertEqual(
+                    db.execute("SELECT received_at FROM robot_data").fetchone(), (190,)
+                )
+                self.assertEqual(
+                    db.execute("SELECT last_seen FROM robot_connections").fetchone(), (200,)
+                )
 
 
 class PrivateCaptureTests(unittest.TestCase):

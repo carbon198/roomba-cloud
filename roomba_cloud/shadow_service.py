@@ -154,20 +154,26 @@ class ShadowService:
             db.execute("UPDATE shadows SET document=? WHERE topic=?", (json.dumps(document), topic))
         return {"version": document["version"], "timestamp": int(time.time()), "state": patch}
 
-    def touch_session(self, session, lease, data_received=False):
-        now = time.time()
+    def touch_session(
+        self, session, lease, data_received=False, *, observed_at=None, data_received_at=None
+    ):
+        """Persist receipt-time freshness without letting old connections regress history."""
+        now = time.time() if observed_at is None else observed_at
+        received_at = now if data_received else data_received_at
         with contextlib.closing(sqlite3.connect(self.path)) as db, db:
             db.execute("UPDATE mqtt_sessions SET expires=? WHERE session=?", (now + lease, session))
             db.execute(
-                "UPDATE robot_connections SET last_seen=? WHERE robot_id IN "
+                "UPDATE robot_connections SET last_seen=MAX(last_seen, ?) WHERE robot_id IN "
                 "(SELECT robot_id FROM mqtt_sessions WHERE session=?)",
                 (int(now), session),
             )
-            if data_received:
+            if received_at is not None:
                 db.execute(
-                    "INSERT OR REPLACE INTO robot_data "
-                    "SELECT robot_id, ? FROM mqtt_sessions WHERE session=?",
-                    (int(now), session),
+                    "INSERT INTO robot_data "
+                    "SELECT robot_id, ? FROM mqtt_sessions WHERE session=? "
+                    "ON CONFLICT(robot_id) DO UPDATE SET "
+                    "received_at=MAX(robot_data.received_at, excluded.received_at)",
+                    (int(received_at), session),
                 )
 
     def end_session(self, session):
