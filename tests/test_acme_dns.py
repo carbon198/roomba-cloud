@@ -249,17 +249,17 @@ assert not result.stdout, result.stdout
         with tempfile.TemporaryDirectory() as directory:
             args = test_deployment.ConfigurationTests().config(
                 directory,
-                public_url="https://robot.example.com",
+                hostname="robot.example.com",
                 tls_cert=None,
                 tls_key=None,
                 acme_email="me@example.com",
                 acme_agree_tos=True,
             )
             self.assertEqual(Configuration(args).hostname, "robot.example.com")
-            args.public_url = "https://127.0.0.1"
+            args.hostname = "127.0.0.1"
             with self.assertRaisesRegex(ValueError, "DNS hostname"):
                 Configuration(args)
-            args.public_url = "https://robot.example.com"
+            args.hostname = "robot.example.com"
             args.acme_email = None
             with self.assertRaises(ValueError):
                 Configuration(args)
@@ -279,7 +279,7 @@ assert not result.stdout, result.stdout
                     )
             args = test_deployment.ConfigurationTests().config(
                 directory,
-                public_url="https://Robot.Example.com:9443",
+                hostname="Robot.Example.com",
                 tls_cert=None,
                 tls_key=None,
                 acme_email="me@example.com",
@@ -288,12 +288,12 @@ assert not result.stdout, result.stdout
             config = Configuration(args)
             self.assertTrue(config.acme_enabled)
             self.assertEqual(config.hostname, "robot.example.com")
-            self.assertEqual(config.public_url, "https://Robot.Example.com:9443")
+            self.assertEqual(config.https_base_url, "https://robot.example.com")
 
     def test_cli_and_environment_wire_certificate_management(self):
         with tempfile.TemporaryDirectory() as directory:
             args = test_deployment.ConfigurationTests().config(
-                directory, public_url="https://robot.example.com"
+                directory, hostname="robot.example.com"
             )
             config = Configuration(args)
             config.prepare_state()
@@ -301,7 +301,7 @@ assert not result.stdout, result.stdout
             config.customer_token_file.chmod(0o600)
             cli = test_deployment.ConfigurationTests().flags(
                 directory,
-                public_url="https://robot.example.com",
+                hostname="robot.example.com",
                 tls_cert=None,
                 tls_key=None,
                 acme_email="me@example.com",
@@ -310,7 +310,7 @@ assert not result.stdout, result.stdout
             docker = container_arguments(
                 ["https"],
                 {
-                    "PUBLIC_URL": args.public_url,
+                    "HOSTNAME": args.hostname,
                     "DATA_DIR": args.data_dir,
                     "CUSTOMER_TOKEN_FILE": args.customer_token_file,
                     "ACME_EMAIL": "me@example.com",

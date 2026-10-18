@@ -13,8 +13,8 @@ the challenge directory, not private state, with the updater.
 Do not restart a pending challenge; a new attempt can replace its value.
 
 Outbound ACME HTTPS and public DNS UDP/TCP 53 are needed; inbound Internet ports
-are not. The single non-wildcard domain is derived from the public URL hostname
-by server.py. Staging state is isolated under acme-staging rather than acme, but
+are not. The single non-wildcard domain is derived from HOSTNAME by server.py. Staging
+state is isolated under acme-staging rather than acme, but
 staging certificates are untrusted by robots/HA. Preserve private account,
 certificate and renewal state; recreating containers is not a renewal strategy
 and repeated production issuance is subject to CA rate limits.

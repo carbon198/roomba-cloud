@@ -20,12 +20,12 @@ def arguments(command, environment):
 
     Empty ordinary values use the Docker default or omit the flag. Booleans
     accept only true/false (case-insensitive; empty is false). server.py owns
-    origin/port validation and supplied-certificate versus ACME exclusivity.
+    hostname validation and supplied-certificate versus ACME exclusivity.
     """
     result = list(command or ["both"])
     defaults = {"DATA_DIR": "/data", "BIND": "0.0.0.0", "HTTPS_PORT": "8443", "MQTT_PORT": "8883"}
     for name in (
-        "PUBLIC_URL",
+        "HOSTNAME",
         "DATA_DIR",
         "CUSTOMER_TOKEN_FILE",
         "BIND",

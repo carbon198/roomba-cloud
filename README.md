@@ -70,7 +70,7 @@ mkdir -p certs
 Edit `.env` and set:
 
 ```dotenv
-PUBLIC_URL=https://roomba.example.com
+HOSTNAME=roomba.example.com
 ```
 
 Leave the port and storage settings at their defaults.
@@ -166,7 +166,7 @@ The customer token is your login credential and is generated automatically on fi
 docker compose exec https cat /data/customer-token.txt
 ```
 
-Paste the key into the web login page at your `PUBLIC_URL`. Save it somewhere; the same key is also
+Paste the key into the web login page at `https://<your-hostname>`. Save it somewhere; the same key is also
 used by Home Assistant to authenticate.
 
 ### Manual container setup
@@ -185,8 +185,11 @@ With **host networking**, omit port mappings and set `HTTPS_PORT=443` and
 
 #### Environment and certificates
 
-Set `PUBLIC_URL=https://roomba.example.com`, using your
-own hostname. Configure DNS as described in the Compose instructions.
+Set `HOSTNAME=roomba.example.com` to your DNS hostname (without `https://`,
+a port, or a path). Configure DNS as described in the Compose instructions.
+HTTPS is advertised on the standard public port 443.
+When upgrading from an older `.env`, replace `PUBLIC_URL=https://roomba.example.com`
+with `HOSTNAME=roomba.example.com`.
 
 For built-in Let's Encrypt, set these additional variables:
 
@@ -255,14 +258,14 @@ same user and share the same data directory.
 ```sh
 # Terminal 1
 sudo .venv/bin/python -m roomba_cloud mqtt \
-  --public-url https://roomba.example.com --https-port 443 --data-dir ./data \
+  --hostname roomba.example.com --https-port 443 --data-dir ./data \
   --acme-email you@example.com --acme-agree-tos
 ```
 
 ```sh
 # Terminal 2
 sudo .venv/bin/python -m roomba_cloud https \
-  --public-url https://roomba.example.com --https-port 443 --data-dir ./data \
+  --hostname roomba.example.com --https-port 443 --data-dir ./data \
   --acme-email you@example.com --acme-agree-tos
 ```
 

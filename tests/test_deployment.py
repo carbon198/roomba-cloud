@@ -118,7 +118,7 @@ class ConfigurationTests(unittest.TestCase):
 
     def flags(self, directory, **overrides):
         value = {
-            "public_url": "https://roomba.example.com",
+            "hostname": "roomba.example.com",
             "tls_cert": str(Path(directory) / "cert.pem"),
             "tls_key": str(Path(directory) / "key.pem"),
             "customer_token_file": str(Path(directory) / "state/token"),
@@ -153,17 +153,20 @@ class ConfigurationTests(unittest.TestCase):
             document = json.loads((config.data_dir / "discovery.json").read_text())
             self.assertEqual(document["mqtt"], "roomba.example.com")
             self.assertEqual(document["httpBase"], "https://roomba.example.com")
+            self.assertEqual(document["vStream"], "https://roomba.example.com")
 
     def test_invalid_configuration_fails_instead_of_using_defaults(self):
         with tempfile.TemporaryDirectory() as directory:
             for changes in (
-                {"public_url": "http://example.com"},
+                {"hostname": "https://example.com"},
+                {"hostname": "example.com/path"},
+                {"hostname": "example.com:8443"},
                 {"mqtt_port": 0},
                 {"mqtt_port": 65536},
                 {"https_port": 8883},
                 {"data_dir": ""},
                 {"customer_token_file": ""},
-                {"public_url": "https://user:secret@example.com"},
+                {"hostname": "example.com:invalid"},
             ):
                 with self.subTest(changes=changes), self.assertRaises(ValueError):
                     Configuration(self.config(directory, **changes))
@@ -214,7 +217,7 @@ class ConfigurationTests(unittest.TestCase):
     def test_native_uses_only_flags_and_docker_translates_environment(self):
         with tempfile.TemporaryDirectory() as directory:
             environment = {
-                "PUBLIC_URL": "https://roomba.example.com",
+                "HOSTNAME": "roomba.example.com",
                 "DATA_DIR": str(Path(directory) / "state"),
                 "TLS_CERT": "env.pem",
                 "TLS_KEY": "env.key",
@@ -263,7 +266,7 @@ class ConfigurationTests(unittest.TestCase):
             container_arguments(
                 [],
                 {
-                    "PUBLIC_URL": "https://roomba.example.com",
+                    "HOSTNAME": "roomba.example.com",
                     "TLS_CERT": "/certs/cert.pem",
                     "TLS_KEY": "/certs/key.pem",
                     "ACME_AGREE_TOS": "false",
@@ -280,8 +283,8 @@ class ConfigurationTests(unittest.TestCase):
         args = parse_arguments(
             [
                 "https",
-                "--public-url",
-                "https://roomba.example.com",
+                "--hostname",
+                "roomba.example.com",
                 "--tls-cert",
                 "cert.pem",
                 "--tls-key",
@@ -294,7 +297,7 @@ class ConfigurationTests(unittest.TestCase):
 
     def test_container_maps_all_settings_and_executes_native_cli(self):
         environment = {
-            "PUBLIC_URL": "https://roomba.example.com:9443",
+            "HOSTNAME": "roomba.example.com",
             "DATA_DIR": "/data/custom",
             "CUSTOMER_TOKEN_FILE": "/data/custom token.txt",
             "BIND": "127.0.0.1",
@@ -313,7 +316,7 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(config.customer_token_file, Path("/data/custom token.txt"))
         self.assertEqual(config.bind, "127.0.0.1")
         self.assertEqual(config.ports, {"https": 9443, "mqtt": 9883})
-        self.assertEqual(config.public_url, environment["PUBLIC_URL"])
+        self.assertEqual(config.https_base_url, "https://roomba.example.com")
         self.assertEqual(args.acme_email, "me@example.com")
         self.assertTrue(args.acme_agree_tos)
         self.assertTrue(args.acme_staging)
@@ -338,8 +341,8 @@ class ConfigurationTests(unittest.TestCase):
                 Configuration(
                     parse_arguments(container_arguments(["https"], {**environment, **conflicts}))
                 )
-        for variable in ("PUBLIC_URL", "HTTPS_PORT", "MQTT_PORT"):
-            invalid = {**environment, variable: "" if variable == "PUBLIC_URL" else "bad"}
+        for variable in ("HOSTNAME", "HTTPS_PORT", "MQTT_PORT"):
+            invalid = {**environment, variable: "" if variable == "HOSTNAME" else "bad"}
             with (
                 self.subTest(variable=variable),
                 contextlib.redirect_stderr(io.StringIO()),
@@ -539,8 +542,8 @@ class MultiRobotNetworkTests(unittest.TestCase):
             parse_arguments(
                 [
                     "healthcheck",
-                    "--public-url",
-                    "https://localhost",
+                    "--hostname",
+                    "localhost",
                     "--tls-cert",
                     str(self.cert),
                     "--tls-key",
