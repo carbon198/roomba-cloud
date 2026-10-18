@@ -185,11 +185,9 @@ With **host networking**, omit port mappings and set `HTTPS_PORT=443` and
 
 #### Environment and certificates
 
-Set `HOSTNAME=roomba.example.com` to your DNS hostname (without `https://`,
-a port, or a path). Configure DNS as described in the Compose instructions.
+Set `HOSTNAME=roomba.example.com` to your DNS hostname. 
+Configure DNS as described in the Compose instructions.
 HTTPS is advertised on the standard public port 443.
-When upgrading from an older `.env`, replace `PUBLIC_URL=https://roomba.example.com`
-with `HOSTNAME=roomba.example.com`.
 
 For built-in Let's Encrypt, set these additional variables:
 
