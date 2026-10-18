@@ -37,9 +37,9 @@ class CommandError(Exception):
 
 
 COMMANDS = {"find", "start", "pause", "stop", "dock"}
-DOCK_COMMANDS = {"evac", "drypad", "stoppaddry"}
+DOCK_COMMANDS = {"evac", "drypad", "stoppaddry", "washpad"}
 # Verified V4 translator: evac -> station action 3/on, drypad -> 2/on,
-# stoppaddry -> 2/off. Dock actions additionally require the robot to be docked.
+# stoppaddry -> 2/off, washpad -> 1/on. Dock actions require the robot to be docked.
 
 
 class DeliveryResult(TypedDict):

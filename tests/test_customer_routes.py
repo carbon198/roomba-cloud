@@ -149,7 +149,7 @@ class CustomerRouteTests(unittest.TestCase):
         self.assertEqual(len(self.fake.payloads), 3)
 
     def test_dock_actions_require_auth_post_empty_body_and_docking(self):
-        for command in ("evac", "drypad", "stoppaddry"):
+        for command in ("evac", "drypad", "stoppaddry", "washpad"):
             route = f"/commands/{command}"
             self.assertEqual(self.request(route, "POST", auth=False)[0], 401)
             self.assertEqual(self.request(route)[0], 405)
