@@ -138,6 +138,25 @@ class CustomerRouteTests(unittest.TestCase):
         self.assertEqual(len(self.fake.payloads), 1)
         self.assertEqual(self.fake.payloads[0][1]["command"], "train")
 
+    def test_dock_actions_require_auth_post_empty_body_and_docking(self):
+        for command in ("evac", "drypad", "stoppaddry"):
+            route = f"/commands/{command}"
+            self.assertEqual(self.request(route, "POST", auth=False)[0], 401)
+            self.assertEqual(self.request(route)[0], 405)
+            self.assertEqual(self.request(route, "POST", "{}")[0], 400)
+            for phase, cycle in (("idle", "none"), ("charge", "clean"), ("pause", "clean")):
+                self.report({"cleanMissionStatus": {"phase": phase, "cycle": cycle}})
+                count = len(self.fake.payloads)
+                self.assertEqual(self.request(route, "POST")[0], 503)
+                self.assertEqual(len(self.fake.payloads), count)
+            self.report({"cleanMissionStatus": {"phase": "charge", "cycle": "none"}})
+            status, _, body = self.request(route, "POST")
+            self.assertEqual(status, 200)
+            self.assertEqual(
+                json.loads(body), {"delivery": "acknowledged", "execution": "unconfirmed"}
+            )
+            self.assertEqual(self.fake.payloads[-1][1]["command"], command)
+
     def test_editor_and_rename_round_trip_through_real_ipc(self):
         status, headers, body = self.request("/room-editor")
         self.assertEqual(status, 200)

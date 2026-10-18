@@ -37,6 +37,9 @@ class CommandError(Exception):
 
 
 COMMANDS = {"find", "start", "pause", "stop", "dock"}
+DOCK_COMMANDS = {"evac", "drypad", "stoppaddry"}
+# Verified V4 translator: evac -> station action 3/on, drypad -> 2/on,
+# stoppaddry -> 2/off. Dock actions use the same last-moment guard as train.
 
 
 class DeliveryResult(TypedDict):
@@ -224,7 +227,9 @@ class CommandRegistry:
             or set(request) != keys
             or not isinstance(request["command"], str)
             or request["command"]
-            not in COMMANDS | {"clean_segments", "set_setting", "live_map", "room_edit", "train"}
+            not in COMMANDS
+            | DOCK_COMMANDS
+            | {"clean_segments", "set_setting", "live_map", "room_edit", "train"}
             or not isinstance(request["robot_id"], str)
             or not re.fullmatch(r"[0-9A-Fa-f]{32}", request["robot_id"])
         ):
@@ -263,7 +268,7 @@ class CommandRegistry:
                 )
             except ValueError as exc:
                 raise CommandError(str(exc)) from exc
-        if request["command"] == "train":
+        if request["command"] in DOCK_COMMANDS | {"train"}:
             from roomba_cloud.maps.controls import map_control_state
 
             def mapping_payload():
@@ -272,7 +277,11 @@ class CommandRegistry:
                 state = map_control_state(self.shadow_db, request["robot_id"], docked_only=True)
                 if not state["allowed"]:
                     raise CommandError(state["reason"])
-                return {"command": "train", "time": int(time.time()), "initiator": "localApp"}
+                return {
+                    "command": request["command"],
+                    "time": int(time.time()),
+                    "initiator": "localApp",
+                }
 
             return session.publish_once(session.topic, mapping_payload)
         if live_map:
@@ -396,7 +405,7 @@ def request_command(
     The eight-second IPC timeout exceeds the session's five-second ACK wait;
     neither timeout establishes that an already written action did not execute.
     """
-    if command not in COMMANDS | {
+    if command not in COMMANDS | DOCK_COMMANDS | {
         "clean_segments",
         "set_setting",
         "live_map",

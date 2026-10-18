@@ -79,7 +79,7 @@ class InventoryTests(unittest.TestCase):
                     },
                     "mapping_controls": {
                         "allowed": False,
-                        "reason": "Mapping requires a docked robot with no active or paused mission.",
+                        "reason": "This action requires a docked robot with no active or paused mission.",
                     },
                 },
             )
