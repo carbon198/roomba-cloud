@@ -10,6 +10,8 @@ drawn walls/overlays, then Lanczos downsampling. This is the user-approved middl
 ground between stair steps and blur. Text is drawn at final resolution. Structural
 walls replace navigable contour strokes when available; contours are fallback.
 Renderer-only changes require an emulator restart, not an HA integration update.
+Maps on floors without a dock can report an out-of-bounds dock pose (observed
+1100,1100). Represent that optional marker as unavailable, not invalid geometry.
 """
 
 import argparse
@@ -96,7 +98,8 @@ def decode_geometry(compressed):
     """Decode head=3, raster=4, dock=7, adjacency=13, contours=14, walls=19.
 
     Reject inconsistent bounds, missing contours, duplicate IDs, malformed
-    adjacency and out-of-range geometry before it reaches rendering or edits.
+    adjacency and out-of-range room geometry before it reaches rendering or edits.
+    A finite out-of-bounds dock pose means no usable dock marker for this map.
     Structural endpoints are world-space cell boundaries, hence their -0.5
     alignment; do not reuse that half-cell adjustment for split-room commands.
     """
@@ -178,9 +181,9 @@ def decode_geometry(compressed):
     if 7 in selected:
         pose = selected[7]
         x, y = finite_float(pose, 1), finite_float(pose, 2)
-        dock = ((x - xmin) / resolution, (y - ymin) / resolution)
-        if not 0 <= dock[0] < width or not 0 <= dock[1] < height:
-            raise ValueError("Charge station is outside the raster")
+        position = ((x - xmin) / resolution, (y - ymin) / resolution)
+        if 0 <= position[0] < width and 0 <= position[1] < height:
+            dock = position
     structural_lines = []
     if 19 in selected:
         room_count = 0
