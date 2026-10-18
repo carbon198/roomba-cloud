@@ -79,6 +79,27 @@ def geometry(
 
 
 class MapPreviewTests(unittest.TestCase):
+    def test_out_of_bounds_dock_is_unavailable_without_losing_geometry(self):
+        expected = decode_geometry(geometry(dock=False))
+        for x, y in ((1100, 1100), (-1100, -1100), (-0.9, 1100), (1100, -1.85)):
+            with self.subTest(x=x, y=y):
+                data = zlib.decompress(geometry(dock=False))
+                data += field(7, float_field(1, x) + float_field(2, y))
+                model = decode_geometry(zlib.compress(data))
+                self.assertEqual(model, expected)
+                self.assertEqual(render_png(model), render_png(expected))
+
+    def test_malformed_dock_coordinates_still_fail(self):
+        for pose in (
+            float_field(1, float("nan")) + float_field(2, 1100),
+            float_field(1, 1100) + float_field(2, float("inf")),
+            float_field(1, 1100),
+        ):
+            with self.subTest(pose=pose):
+                data = zlib.decompress(geometry(dock=False)) + field(7, pose)
+                with self.assertRaises(ValueError):
+                    decode_geometry(zlib.compress(data))
+
     def test_post_cleaning_unassigned_structural_walls_do_not_create_a_room(self):
         line = field(2, float_field(1, -0.85) + float_field(2, -1.6)) + field(
             3, float_field(1, -0.55) + float_field(2, -1.6)
