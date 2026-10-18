@@ -34,6 +34,39 @@ class DashboardStorageTests(unittest.TestCase):
 
 
 class InventoryTests(unittest.TestCase):
+    def test_mapping_availability_distinguishes_undocked_idle_from_paused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "shadows.db"
+            service = ShadowService(path)
+            for phase, cycle, allowed in (
+                ("charge", "none", True),
+                ("idle", "none", True),
+                ("stop", "none", True),
+                ("pause", "clean", False),
+                ("charge", "clean", False),
+                ("run", "clean", False),
+                ("pause", "none", False),
+                ("unknown", "none", False),
+            ):
+                with self.subTest(phase=phase, cycle=cycle):
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        service.respond(
+                            f"$aws/things/{A}/shadow/name/ro-currentstate/update",
+                            json.dumps(
+                                {
+                                    "state": {
+                                        "reported": {
+                                            "cleanMissionStatus": {"phase": phase, "cycle": cycle}
+                                        }
+                                    }
+                                }
+                            ).encode(),
+                            A,
+                        )
+                    self.assertEqual(
+                        inventory(path)["robots"][0]["mapping_controls"]["allowed"], allowed
+                    )
+
     def test_persistent_history_metadata_and_connection_leases(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "shadows.db"
@@ -79,7 +112,7 @@ class InventoryTests(unittest.TestCase):
                     },
                     "mapping_controls": {
                         "allowed": False,
-                        "reason": "This action requires a docked robot with no active or paused mission.",
+                        "reason": "Map controls require a known idle robot with no active or paused mission.",
                     },
                 },
             )
