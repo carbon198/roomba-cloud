@@ -16,8 +16,8 @@ missing/unknown state and refresh errors. Disable all editor fields/interactions
 but keep Reload for inspection; an empty map list is not a selectable default.
 Server checks remain authoritative. Submitted edits are one-shot with generation
 guards and persistent map locks, not optimistic changes to source geometry.
-Mapping runs require confirmation, online state and phase charge/cycle none.
-The command service rechecks docking under command ownership before publishing
+Mapping runs require confirmation, online state and an explicit idle/no-mission state.
+The command service rechecks mission state under command ownership before publishing
 train once; delivery acknowledgement does not establish robot execution.
 """
 
@@ -97,7 +97,7 @@ def inventory(path):
                     item["phase"] = mission["phase"]
     for key, item in robots.items():
         item["map_controls"] = map_control_state(path, key)
-        item["mapping_controls"] = map_control_state(path, key, docked_only=True)
+        item["mapping_controls"] = map_control_state(path, key)
     return {"robots": [robots[key] for key in sorted(robots)]}
 
 
@@ -112,7 +112,7 @@ HTML = """<!doctype html>
 <button>Sign in</button></form>
 <section id="dashboard" hidden><button id="refresh">Refresh</button>
 <button id="logout">Sign out</button>
-<p>Mapping runs make the robot leave its dock and explore. They require a docked
+<p>Mapping runs make the robot explore your home. They require an idle
 robot with no active or paused mission and confirmation before sending.</p>
 <div class="scroll"><table><thead><tr><th>Robot ID</th><th>Model / SKU</th>
 <th>Last IP</th><th>MQTT</th><th>Battery</th><th>Phase</th><th>Firmware</th>
@@ -282,11 +282,11 @@ async function refresh() {
       trainButton.textContent = 'Mapping run';
       trainButton.disabled = !robot.online || robot.mapping_controls?.allowed !== true;
       trainButton.title = robot.online
-        ? robot.mapping_controls?.reason || 'Start an exploration run from the dock'
-        : 'Robot must be online and docked';
+        ? robot.mapping_controls?.reason || 'Start an exploration run'
+        : 'Robot must be online';
       trainButton.addEventListener('click', async () => {
         if (trainButton.disabled || !token) return;
-        if (!confirm('Start a mapping run? The robot will leave the dock and explore your home.')) return;
+        if (!confirm('Start a mapping run? The robot will move and explore your home.')) return;
         trainButton.disabled = true;
         const actionGeneration = generation;
         status.textContent = 'Sending mapping request...';

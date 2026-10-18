@@ -39,7 +39,7 @@ class CommandError(Exception):
 COMMANDS = {"find", "start", "pause", "stop", "dock"}
 DOCK_COMMANDS = {"evac", "drypad", "stoppaddry"}
 # Verified V4 translator: evac -> station action 3/on, drypad -> 2/on,
-# stoppaddry -> 2/off. Dock actions use the same last-moment guard as train.
+# stoppaddry -> 2/off. Dock actions additionally require the robot to be docked.
 
 
 class DeliveryResult(TypedDict):
@@ -271,10 +271,14 @@ class CommandRegistry:
         if request["command"] in DOCK_COMMANDS | {"train"}:
             from roomba_cloud.maps.controls import map_control_state
 
-            def mapping_payload():
+            def guarded_payload():
                 if self.shadow_db is None:
                     raise CommandError("Robot state is unavailable")
-                state = map_control_state(self.shadow_db, request["robot_id"], docked_only=True)
+                state = map_control_state(
+                    self.shadow_db,
+                    request["robot_id"],
+                    docked_only=request["command"] in DOCK_COMMANDS,
+                )
                 if not state["allowed"]:
                     raise CommandError(state["reason"])
                 return {
@@ -283,7 +287,7 @@ class CommandRegistry:
                     "initiator": "localApp",
                 }
 
-            return session.publish_once(session.topic, mapping_payload)
+            return session.publish_once(session.topic, guarded_payload)
         if live_map:
             return session.publish_once(
                 session.live_map_topic,

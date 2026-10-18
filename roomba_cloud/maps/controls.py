@@ -6,7 +6,7 @@ malformed persisted shapes and database failures raise explicit errors. This
 guard reads the latest persisted report, not a physical robot probe, and does not
 claim an authoritative idle loaded-map identity. The browser adds online/UI
 gating, but server checks here remain mandatory before payload construction.
-Mapping runs and manual dock actions use docked_only: phase charge and cycle none.
+Mapping runs use the idle guard; manual dock actions require docked_only.
 """
 
 import contextlib

@@ -124,19 +124,29 @@ class CustomerRouteTests(unittest.TestCase):
                 self.assertEqual(headers["Cache-Control"], "no-store")
         self.assertFalse(self.fake.payloads)
 
-    def test_mapping_run_route_is_post_only_and_docked_only(self):
+    def test_mapping_run_route_is_post_only_and_requires_no_mission(self):
         self.assertEqual(self.request("/commands/train")[0], 405)
         self.assertEqual(self.request("/commands/train", "POST", "{}")[0], 400)
-        for phase, cycle in (("idle", "none"), ("charge", "clean"), ("run", "train")):
+        for phase, cycle in (
+            ("charge", "clean"),
+            ("run", "clean"),
+            ("run", "train"),
+            ("pause", "clean"),
+            ("pause", "none"),
+            ("unknown", "none"),
+        ):
             self.report({"cleanMissionStatus": {"phase": phase, "cycle": cycle}})
             self.assertEqual(self.request("/commands/train", "POST")[0], 503)
         self.assertFalse(self.fake.payloads)
-        self.report({"cleanMissionStatus": {"phase": "charge", "cycle": "none"}})
-        status, _, body = self.request("/commands/train", "POST")
-        self.assertEqual(status, 200)
-        self.assertEqual(json.loads(body), {"delivery": "acknowledged", "execution": "unconfirmed"})
-        self.assertEqual(len(self.fake.payloads), 1)
-        self.assertEqual(self.fake.payloads[0][1]["command"], "train")
+        for phase in ("charge", "idle", "stop"):
+            self.report({"cleanMissionStatus": {"phase": phase, "cycle": "none"}})
+            status, _, body = self.request("/commands/train", "POST")
+            self.assertEqual(status, 200)
+            self.assertEqual(
+                json.loads(body), {"delivery": "acknowledged", "execution": "unconfirmed"}
+            )
+            self.assertEqual(self.fake.payloads[-1][1]["command"], "train")
+        self.assertEqual(len(self.fake.payloads), 3)
 
     def test_dock_actions_require_auth_post_empty_body_and_docking(self):
         for command in ("evac", "drypad", "stoppaddry"):

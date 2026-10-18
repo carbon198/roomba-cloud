@@ -37,7 +37,7 @@ class FakeRobot:
 
 
 class CommandTests(unittest.TestCase):
-    def test_mapping_run_requires_docked_no_mission_and_live_subscription(self):
+    def test_mapping_run_requires_no_mission_and_live_subscription(self):
         from roomba_cloud.shadow_service import ShadowService
 
         robot = FakeRobot()
@@ -54,8 +54,9 @@ class CommandTests(unittest.TestCase):
             topic = "$aws/things/" + "a" * 32 + "/shadow/name/ro-currentstate/update"
             for mission in (
                 {},
-                {"phase": "idle", "cycle": "none"},
-                {"phase": "stop", "cycle": "none"},
+                {"phase": "run", "cycle": "clean"},
+                {"phase": "pause", "cycle": "clean"},
+                {"phase": "pause", "cycle": "none"},
                 {"phase": "run", "cycle": "train"},
                 {"phase": "charge", "cycle": "clean"},
                 {"phase": "pause", "cycle": "train"},
