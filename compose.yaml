@@ -8,7 +8,7 @@ services:
     restart: unless-stopped
     init: true
     environment: &server-environment
-      PUBLIC_URL: ${PUBLIC_URL:?Set PUBLIC_URL in .env}
+      HOSTNAME: ${HOSTNAME:?Set HOSTNAME in .env}
       DATA_DIR: ${DATA_DIR:-/data}
       CUSTOMER_TOKEN_FILE: ${CUSTOMER_TOKEN_FILE:-}
       BIND: ${BIND:-0.0.0.0}

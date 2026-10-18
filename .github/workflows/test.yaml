@@ -44,7 +44,7 @@ jobs:
           path: coverage.xml
       - run: docker compose config --quiet
         env:
-          PUBLIC_URL: https://roomba.example.com
+          HOSTNAME: roomba.example.com
       - run: docker build -t roomba-cloud:test .
       # Isolated synthetic services exercise packaging/TLS/IPC without LAN ports.
       - run: python tests/container_smoke.py --image roomba-cloud:test

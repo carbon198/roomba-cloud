@@ -9,8 +9,8 @@ Deployment contract:
   archives and the customer token form one deployment's private state. Stop both
   services before a consistent backup; preserve archive paths relative to the DB.
   Do not share writable state with a second deployment or mixed schema versions.
-* public_url is the externally reachable HTTPS origin, not necessarily the bind
-  port. Discovery advertises only an MQTT hostname: robots still expect external
+* hostname is the externally reachable DNS name. HTTPS uses its standard public
+  port (443); discovery advertises only an MQTT hostname: robots still expect external
   TCP 8883 even if the internal MQTT listener port changes.
 * Supply a trusted full PEM chain and matching unencrypted private key to both
   listeners, or let the HTTPS ACME supervisor manage shared certificates.
@@ -38,7 +38,6 @@ import subprocess
 import sys
 import tempfile
 import time
-from urllib.parse import urlsplit
 
 
 HEALTHCHECK_CLIENT_ID = "roomba-cloud-healthcheck"
@@ -97,7 +96,7 @@ class Configuration:
 
     Paths resolve against the launcher's working directory. No robot-specific
     configuration is needed: MQTT client IDs and registrations discover robots.
-    Configuration is startup-only; URL or supplied-PEM changes require restarting
+    Configuration is startup-only; hostname or supplied-PEM changes require restarting
     both services. Managed ACME reloads are handled separately by acme_dns.
     """
 
@@ -115,28 +114,31 @@ class Configuration:
                 raise ValueError(
                     "Supply both --tls-cert and --tls-key, or both --acme-email and --acme-agree-tos"
                 )
-        origin = args.public_url
-        if not isinstance(origin, str):
-            raise ValueError("public_url must be an HTTPS origin")
-        url = urlsplit(origin)
-        if (
-            url.scheme != "https"
-            or not url.hostname
-            or url.username is not None
-            or url.password is not None
-            or url.path not in ("", "/")
-            or url.query
-            or url.fragment
-            or url.port == 0
-            or any(c.isspace() for c in origin)
+        hostname = args.hostname
+        if not isinstance(hostname, str) or not hostname or any(c.isspace() for c in hostname):
+            raise ValueError("hostname must be a DNS hostname without a scheme, path, or port")
+        try:
+            ascii_hostname = hostname.encode("idna").decode("ascii").lower()
+        except UnicodeError as exc:
+            raise ValueError("hostname must be a valid DNS hostname") from exc
+        labels = ascii_hostname.split(".")
+        if len(ascii_hostname) > 253 or not all(
+            1 <= len(label) <= 63
+            and label[0].isalnum()
+            and label[-1].isalnum()
+            and all(char.isalnum() or char == "-" for char in label)
+            for label in labels
         ):
-            raise ValueError("public_url must be an HTTPS origin without credentials")
-        self.public_url = origin.rstrip("/")
-        self.hostname = url.hostname
+            raise ValueError(
+                "hostname must be a valid DNS hostname without a scheme, path, or port"
+            )
+        self.hostname = ascii_hostname
+        self.https_base_url = f"https://{self.hostname}"
         if self.acme_enabled:
             from roomba_cloud.acme_dns import domain_name
 
             self.hostname = domain_name(self.hostname)
+            self.https_base_url = f"https://{self.hostname}"
         self.bind = args.bind
         if not isinstance(self.bind, str):
             raise ValueError("bind must be a string")
@@ -178,7 +180,7 @@ class Configuration:
         return {
             "awsRegion": "us-east-1",
             "discoveryTTL": 60,
-            "httpBase": self.public_url,
+            "httpBase": self.https_base_url,
             "iotTopics": "$aws",
             "irbtTopics": "v011-irbthbu",
             "svcDeplId": "v011",
@@ -186,7 +188,7 @@ class Configuration:
             "mqttApp": self.hostname,
             "mqttAts": self.hostname,
             "userServicesBase": self.hostname,
-            "vStream": self.public_url,
+            "vStream": self.https_base_url,
         }
 
     def arguments(self, service):
@@ -210,7 +212,7 @@ class Configuration:
                 "--shadow-db",
                 str(self.data_dir / "shadows.sqlite3"),
                 "--map-upload-base-url",
-                self.public_url,
+                self.https_base_url,
             ]
         discovery = self.data_dir / "discovery.json"
         discovery.write_text(json.dumps(self.discovery()) + "\n")
@@ -270,7 +272,7 @@ def parse_arguments(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("service", choices=("both", "https", "mqtt", "init", "healthcheck"))
     parser.add_argument(
-        "--public-url", required=True, help="public HTTPS origin reachable by robots and HA"
+        "--hostname", required=True, help="DNS hostname reachable by robots and HA (HTTPS port 443)"
     )
     parser.add_argument(
         "--data-dir", default="data", help="private state directory (default: ./data)"
@@ -289,9 +291,7 @@ def parse_arguments(argv=None):
     parser.add_argument("--check-service", choices=("https", "mqtt"), default="https")
     parser.add_argument("--tls-cert", help="own PEM certificate chain path; incompatible with ACME")
     parser.add_argument("--tls-key", help="own PEM private key path; requires --tls-cert")
-    parser.add_argument(
-        "--acme-email", help="enable ACME for the public URL hostname with this email"
-    )
+    parser.add_argument("--acme-email", help="enable ACME for this hostname with this email")
     parser.add_argument(
         "--acme-agree-tos", action="store_true", help="accept the certificate authority terms"
     )
