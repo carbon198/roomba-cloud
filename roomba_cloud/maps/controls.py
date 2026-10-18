@@ -6,7 +6,7 @@ malformed persisted shapes and database failures raise explicit errors. This
 guard reads the latest persisted report, not a physical robot probe, and does not
 claim an authoritative idle loaded-map identity. The browser adds online/UI
 gating, but server checks here remain mandatory before payload construction.
-Mapping runs use the stricter docked_only guard: phase charge and cycle none.
+Mapping runs and manual dock actions use docked_only: phase charge and cycle none.
 """
 
 import contextlib
@@ -52,7 +52,7 @@ def map_control_state(
         "reason": ""
         if allowed
         else (
-            "Mapping requires a docked robot with no active or paused mission."
+            "This action requires a docked robot with no active or paused mission."
             if docked_only
             else "Map controls require a known idle robot with no active or paused mission."
         ),
