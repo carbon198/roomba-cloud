@@ -543,7 +543,7 @@ def cloud_handler():
                     r"/v1/customer/robots/([0-9A-Fa-f]{32})/settings/([a-z_]{1,64})", path
                 )
                 command_route = re.fullmatch(
-                    r"/v1/customer/robots/([0-9A-Fa-f]{32})/commands/(start|pause|stop|dock|clean_segments|live_map)",
+                    r"/v1/customer/robots/([0-9A-Fa-f]{32})/commands/(start|pause|stop|dock|train|clean_segments|live_map)",
                     path,
                 )
                 if locate or command_route or setting_route:

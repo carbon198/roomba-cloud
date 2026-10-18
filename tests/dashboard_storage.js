@@ -10,16 +10,22 @@ function browser(saved, blocked = false) {
   const events = {};
   const requests = [];
   let responseStatus = 200;
+  let robots = [];
+  let confirmed = true;
+  let confirmations = 0;
   const element = selector => {
     if (!elements.has(selector)) elements.set(selector, {
       value: '', textContent: '', checked: false, hidden: false,
       addEventListener(name, handler) { this[name] = handler; },
       replaceChildren() {},
+      append() {},
     });
     return elements.get(selector);
   };
   const context = vm.createContext({
-    document: {querySelector: element, getElementById: id => element('#' + id)},
+    document: {querySelector: element, getElementById: id => element('#' + id),
+      createElement: () => ({addEventListener(name, handler) { this[name] = handler; },
+        append() {}})},
     localStorage: {
       getItem(name) { if (blocked) throw new Error('blocked'); return storage.get(name) ?? null; },
       setItem(name, value) { if (blocked) throw new Error('blocked'); storage.set(name, value); },
@@ -28,16 +34,19 @@ function browser(saved, blocked = false) {
     window: {addEventListener(name, handler) { events[name] = handler; }},
     setInterval() {},
     setTimeout(callback) { callback(); },
-    confirm() { return true; },
+    confirm() { confirmations++; return confirmed; },
     AbortSignal: {timeout() {}},
     fetch: async (url, options) => {
       requests.push(options.headers.Authorization);
       return {status: responseStatus, ok: responseStatus === 200,
-        json: async () => ({robots: []})};
+        json: async () => ({robots})};
     },
   });
   vm.runInContext(source, context);
   return {storage, element, context, events, requests,
+    robots(value) { robots = value; },
+    confirm(value) { confirmed = value; },
+    confirmations() { return confirmations; },
     status(value) { responseStatus = value; },
     async settle() { await new Promise(resolve => setImmediate(resolve)); },
     async login(value) {
@@ -48,6 +57,38 @@ function browser(saved, blocked = false) {
 }
 
 (async () => {
+  const mapping = browser();
+  await mapping.login('token');
+  for (const robot of [
+    {online: false, mapping_controls: {allowed: true}},
+    {online: true, mapping_controls: {allowed: false}},
+    {online: true},
+    {online: true, mapping_controls: {allowed: true}},
+  ]) {
+    mapping.robots([{robot_id:'a'.repeat(32), ...robot}]);
+    await vm.runInContext('refresh()', mapping.context);
+    assert.equal(vm.runInContext('mappingButtons[0].disabled', mapping.context),
+      !(robot.online && robot.mapping_controls?.allowed === true));
+  }
+  mapping.confirm(false);
+  const beforeMapping = mapping.requests.length;
+  await vm.runInContext('mappingButtons[0].click()', mapping.context);
+  assert.equal(mapping.requests.length, beforeMapping);
+  assert.equal(mapping.confirmations(), 1);
+  mapping.confirm(true);
+  const commands = [];
+  mapping.context.fetch = async (url, options) => {
+    commands.push({url, options});
+    return {ok:true, status:200};
+  };
+  await vm.runInContext('mappingButtons[0].click()', mapping.context);
+  assert.equal(commands.length, 1);
+  assert.equal(commands[0].url, '/v1/customer/robots/' + 'a'.repeat(32) + '/commands/train');
+  assert.equal(commands[0].options.method, 'POST');
+  await vm.runInContext('mappingButtons[0].click()', mapping.context);
+  assert.equal(commands.length, 1);
+  assert.match(mapping.element('#status').textContent, /not confirmed/);
+
   const names = browser();
   for (const invalid of ['', '   ', 'a'.repeat(65), '😀'.repeat(65), 'Kitchen\n',
     '\tKitchen', 'a\x7fb', 'a\x85b', 'a\u200bb', 'a\u202eb', 'a\u2028b',

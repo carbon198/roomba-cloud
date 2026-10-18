@@ -16,6 +16,9 @@ missing/unknown state and refresh errors. Disable all editor fields/interactions
 but keep Reload for inspection; an empty map list is not a selectable default.
 Server checks remain authoritative. Submitted edits are one-shot with generation
 guards and persistent map locks, not optimistic changes to source geometry.
+Mapping runs require confirmation, online state and phase charge/cycle none.
+The command service rechecks docking under command ownership before publishing
+train once; delivery acknowledgement does not establish robot execution.
 """
 
 import contextlib
@@ -94,6 +97,7 @@ def inventory(path):
                     item["phase"] = mission["phase"]
     for key, item in robots.items():
         item["map_controls"] = map_control_state(path, key)
+        item["mapping_controls"] = map_control_state(path, key, docked_only=True)
     return {"robots": [robots[key] for key in sorted(robots)]}
 
 
@@ -108,9 +112,11 @@ HTML = """<!doctype html>
 <button>Sign in</button></form>
 <section id="dashboard" hidden><button id="refresh">Refresh</button>
 <button id="logout">Sign out</button>
+<p>Mapping runs make the robot leave its dock and explore. They require a docked
+robot with no active or paused mission and confirmation before sending.</p>
 <div class="scroll"><table><thead><tr><th>Robot ID</th><th>Model / SKU</th>
 <th>Last IP</th><th>MQTT</th><th>Battery</th><th>Phase</th><th>Firmware</th>
-<th>Last seen</th><th>Rooms</th></tr></thead><tbody id="robots"></tbody></table></div>
+<th>Last seen</th><th>Actions</th></tr></thead><tbody id="robots"></tbody></table></div>
 <section id="editor" hidden><h2>Room editor</h2>
 <p>Maps cannot be edited or deleted while the robot is running or has a paused mission.
 The robot must be idle with no mission; controls are also locked when mission state is unknown.</p>
@@ -193,6 +199,7 @@ const login = document.querySelector('#login');
 const dashboard = document.querySelector('#dashboard');
 const status = document.querySelector('#status');
 const rows = document.querySelector('#robots');
+let mappingButtons = [];
 const tokenStorageKey = 'roomba-cloud.customer-token';
 function storeToken(value) {
   // Origin-local persistence is intentional; storage denial must not silently fail.
@@ -227,6 +234,7 @@ async function refresh() {
   // Save a key only after authenticated inventory succeeds; 503 is not bad auth.
   if (!token || busy) return;
   busy = true;
+  for (const button of mappingButtons) button.disabled = true;
   const requestGeneration = generation;
   status.textContent = 'Loading...';
   try {
@@ -249,6 +257,7 @@ async function refresh() {
       updateMapControls(robot?.online ? robot.map_controls : null);
     }
     rows.replaceChildren();
+    mappingButtons = [];
     for (const robot of data.robots) {
       const row = document.createElement('tr');
       const cells = [robot.robot_id, robot.sku, robot.ip,
@@ -267,6 +276,35 @@ async function refresh() {
       editButton.textContent = 'Edit rooms';
       editButton.addEventListener('click', () => loadEditor(robot.robot_id));
       editCell.append(editButton);
+      const trainButton = document.createElement('button');
+      trainButton.className = 'mapping-run';
+      mappingButtons.push(trainButton);
+      trainButton.textContent = 'Mapping run';
+      trainButton.disabled = !robot.online || robot.mapping_controls?.allowed !== true;
+      trainButton.title = robot.online
+        ? robot.mapping_controls?.reason || 'Start an exploration run from the dock'
+        : 'Robot must be online and docked';
+      trainButton.addEventListener('click', async () => {
+        if (trainButton.disabled || !token) return;
+        if (!confirm('Start a mapping run? The robot will leave the dock and explore your home.')) return;
+        trainButton.disabled = true;
+        const actionGeneration = generation;
+        status.textContent = 'Sending mapping request...';
+        try {
+          const response = await fetch('/v1/customer/robots/' + robot.robot_id + '/commands/train', {
+            method: 'POST', headers: {Authorization: 'Bearer ' + token},
+            signal: AbortSignal.timeout(10000)
+          });
+          if (generation !== actionGeneration) return;
+          if (response.status === 401) { logout(); return; }
+          if (!response.ok) throw new Error('Server returned HTTP ' + response.status);
+          status.textContent = 'Mapping request delivered; robot execution is not confirmed.';
+        } catch (error) {
+          if (generation === actionGeneration) status.textContent =
+            'Mapping request not confirmed: ' + error.message + '. Check the robot before retrying.';
+        }
+      });
+      editCell.append(trainButton);
       row.append(editCell);
     }
     login.hidden = true;

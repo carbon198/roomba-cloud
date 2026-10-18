@@ -77,6 +77,10 @@ class InventoryTests(unittest.TestCase):
                         "allowed": False,
                         "reason": "Map controls require a known idle robot with no active or paused mission.",
                     },
+                    "mapping_controls": {
+                        "allowed": False,
+                        "reason": "Mapping requires a docked robot with no active or paused mission.",
+                    },
                 },
             )
             self.assertEqual(robots[1]["sku"], "<script>untrusted</script>")
