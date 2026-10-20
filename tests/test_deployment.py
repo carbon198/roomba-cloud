@@ -145,6 +145,10 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual((config.data_dir / "shadows.sqlite3").stat().st_mode & 0o777, 0o600)
             mqtt = config.arguments("mqtt")
             https = config.arguments("https")
+            self.assertEqual(
+                https[https.index("--customer-acme-challenge-file") + 1],
+                str(config.data_dir / "dns-challenges/challenge.json"),
+            )
             for flag in ("--command-socket", "--map-upload-db"):
                 self.assertEqual(mqtt[mqtt.index(flag) + 1], https[https.index(flag) + 1])
             for args in (mqtt, https):
