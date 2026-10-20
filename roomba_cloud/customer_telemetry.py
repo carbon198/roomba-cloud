@@ -25,6 +25,7 @@ deletion; settings/cleaning modes are capability-filtered. schema_version remain
 import time
 import contextlib
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
@@ -64,6 +65,34 @@ class TelemetryField(TypedDict):
     unit_of_measurement: NotRequired[str]
     state_class: NotRequired[str]
     entity_category: NotRequired[str]
+
+
+class DNSChallenge(TypedDict):
+    name: str
+    type: str
+    value: str
+
+
+def dns_challenge(path: str | PathLike[str] | None) -> DNSChallenge | None:
+    if path is None:
+        return None
+    try:
+        raw = Path(path).read_text()
+    except FileNotFoundError:
+        return None
+    document = json.loads(raw)
+    if (
+        not isinstance(document, dict)
+        or set(document) != {"name", "type", "value"}
+        or document["type"] != "TXT"
+        or not isinstance(document["name"], str)
+        or len(document["name"]) > 269
+        or not re.fullmatch(r"_acme-challenge\.[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?", document["name"])
+        or not isinstance(document["value"], str)
+        or not re.fullmatch(r"[A-Za-z0-9_-]{43}", document["value"])
+    ):
+        raise ValueError("Invalid ACME DNS challenge")
+    return {"name": document["name"], "type": "TXT", "value": document["value"]}
 
 
 class MapDescriptor(TypedDict):
@@ -129,10 +158,14 @@ class TelemetrySnapshot(TypedDict):
     settings: list[SettingDescriptor]
     cleaning_modes: list[int]
     device: dict[str, str]
+    acme_dns_challenge: DNSChallenge | None
 
 
 def snapshot(
-    path: str | PathLike[str], robot_id: str, map_upload_db: str | PathLike[str] | None = None
+    path: str | PathLike[str],
+    robot_id: str,
+    map_upload_db: str | PathLike[str] | None = None,
+    acme_challenge_file: str | PathLike[str] | None = None,
 ) -> TelemetrySnapshot | None:
     """Return None only when no base telemetry exists; propagate storage/decode errors.
 
@@ -302,4 +335,5 @@ def snapshot(
         "settings": configuration(path, robot_id),
         "cleaning_modes": cleaning_modes(path, robot_id),
         "device": device,
+        "acme_dns_challenge": dns_challenge(acme_challenge_file),
     }

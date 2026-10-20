@@ -777,7 +777,10 @@ def cloud_handler():
                     try:
                         uploads = getattr(self.server, "uploads", None)
                         document = snapshot(
-                            db_path, match[1], uploads.path if uploads is not None else None
+                            db_path,
+                            match[1],
+                            uploads.path if uploads is not None else None,
+                            getattr(self.server, "customer_acme_challenge_file", None),
                         )
                         payload = json.dumps(document, allow_nan=False).encode()
                     except (
@@ -918,7 +921,8 @@ def cloud_handler():
                 with events.subscribe(robot_id) as changed:
                     uploads = getattr(self.server, "uploads", None)
                     map_db = uploads.path if uploads is not None else None
-                    document = snapshot(db_path, robot_id, map_db)
+                    challenge_file = getattr(self.server, "customer_acme_challenge_file", None)
+                    document = snapshot(db_path, robot_id, map_db, challenge_file)
                     if document is None:
                         self.reply(404)
                         return
@@ -945,7 +949,7 @@ def cloud_handler():
                         if events.stopped:
                             break
                         # Also reconcile lease expiry, process crashes and lost wakeups.
-                        document = snapshot(db_path, robot_id, map_db)
+                        document = snapshot(db_path, robot_id, map_db, challenge_file)
                         if document is None:
                             raise ValueError("Telemetry disappeared during stream")
             except (
@@ -1007,6 +1011,11 @@ def main():
         help="enable sanitized read-only customer telemetry from this existing shadow database",
     )
     parser.add_argument(
+        "--customer-acme-challenge-file",
+        type=Path,
+        help="public DNS challenge JSON to include in authenticated customer telemetry",
+    )
+    parser.add_argument(
         "--command-socket",
         type=Path,
         help="private Unix socket of the MQTT service; enables HA vacuum commands",
@@ -1059,6 +1068,7 @@ def main():
         server.customer_auth = customer_auth
         server.command_socket = args.command_socket
         server.customer_shadow_db = args.customer_shadow_db
+        server.customer_acme_challenge_file = args.customer_acme_challenge_file
         server.uploads = uploads
         server.max_bytes = args.map_max_bytes
         server.max_total = args.map_max_total_bytes

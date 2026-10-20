@@ -387,3 +387,68 @@ class CustomerRouteTests(unittest.TestCase):
             "roomba_cloud.customer_telemetry.snapshot", side_effect=ValueError("private details")
         ):
             self.assertEqual(self.request("/events")[0], 500)
+
+    def test_acme_challenge_telemetry_lifecycle_and_invalid_storage(self):
+        from roomba_cloud.acme_dns import write_challenge
+
+        path = Path(self.shadows.path).parent / "dns-challenges/challenge.json"
+        self.server.customer_acme_challenge_file = path
+        self.assertIsNone(json.loads(self.request("/telemetry")[2])["acme_dns_challenge"])
+        name = "_acme-challenge.roomba.example.com"
+        for value in ("a" * 43, "b" * 43):
+            write_challenge(path, name, value)
+            self.assertEqual(self.request("/telemetry", auth=False)[0], 401)
+            status, _, body = self.request("/telemetry")
+            self.assertEqual(status, 200)
+            self.assertEqual(
+                json.loads(body)["acme_dns_challenge"],
+                {"name": name, "type": "TXT", "value": value},
+            )
+        path.unlink()
+        self.assertIsNone(json.loads(self.request("/telemetry")[2])["acme_dns_challenge"])
+        for document in (
+            "{",
+            "[]",
+            "{}",
+            json.dumps({"name": name, "type": "TXT", "value": "short"}),
+            json.dumps({"name": "bad", "type": "TXT", "value": "a" * 43}),
+            json.dumps({"name": name, "type": "A", "value": "a" * 43}),
+            json.dumps({"name": name, "type": "TXT", "value": "a" * 43, "private": "secret"}),
+        ):
+            path.write_text(document)
+            self.assertEqual(self.request("/telemetry")[0], 500)
+        self.assertNotIn("secret", self.output.getvalue())
+
+    def test_acme_challenge_changes_stream_without_robot_updates(self):
+        from roomba_cloud.acme_dns import write_challenge
+
+        path = Path(self.shadows.path).parent / "dns-challenges/challenge.json"
+        self.server.customer_acme_challenge_file = path
+        events = Mock(stopped=False)
+        changed = Mock()
+        events.subscribe.return_value = contextlib.nullcontext(changed)
+        self.server.telemetry_events = events
+        count = 0
+
+        def wait(timeout):
+            nonlocal count
+            count += 1
+            if count == 1:
+                write_challenge(path, "_acme-challenge.roomba.example.com", "a" * 43)
+            elif count == 2:
+                path.unlink()
+            else:
+                events.stopped = True
+
+        changed.wait.side_effect = wait
+        status, _, body = self.request("/events")
+        self.assertEqual(status, 200)
+        documents = [
+            json.loads(line.removeprefix(b"data: "))
+            for line in body.splitlines()
+            if line.startswith(b"data: ")
+        ]
+        self.assertEqual(len(documents), 3)
+        self.assertIsNone(documents[0]["acme_dns_challenge"])
+        self.assertEqual(documents[1]["acme_dns_challenge"]["value"], "a" * 43)
+        self.assertIsNone(documents[2]["acme_dns_challenge"])

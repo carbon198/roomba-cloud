@@ -224,6 +224,8 @@ class Configuration:
             str(self.customer_token_file),
             "--customer-shadow-db",
             str(self.data_dir / "shadows.sqlite3"),
+            "--customer-acme-challenge-file",
+            str(self.data_dir / "dns-challenges/challenge.json"),
         ]
 
 
