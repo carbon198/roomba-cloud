@@ -144,6 +144,10 @@ attempt times out, follow the logs for the next attempt and its current value.
 <details>
   <summary>Click to Expand</summary>
 
+The HA addon includes a sensor with the TXT challenge value. If you can update your DNS
+provider within HA, using an automation is probably the easiest route. The sensor value
+will be Unknown when no TXT update is needed.
+
 The HTTPS service also writes `/data/dns-challenges/challenge.json`:
 
 ```json
