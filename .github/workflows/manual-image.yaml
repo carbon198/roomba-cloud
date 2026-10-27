@@ -1,0 +1,85 @@
+name: Publish manual branch image
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: manual-image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  tests:
+    uses: ./.github/workflows/test.yaml
+
+  publish:
+    needs: tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Determine image tags
+        id: image
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import os
+          import re
+
+          branch = re.sub(r"[^a-z0-9_.-]+", "-", os.environ["REF_NAME"].lower())
+          branch = branch.strip("._-")[:100].rstrip("._-")
+          if not branch:
+              raise SystemExit("Unable to create a valid image tag from the selected branch")
+
+          image = "ghcr.io/" + os.environ["REPOSITORY"].lower()
+          branch_tag = f"manual-{branch}"
+          commit_tag = f"{branch_tag}-{os.environ['SHA'][:12]}"
+          print(f"image={image}")
+          print(f"branch_tag={branch_tag}")
+          print(f"commit_tag={commit_tag}")
+          PY
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ steps.image.outputs.image }}:${{ steps.image.outputs.branch_tag }}
+            ${{ steps.image.outputs.image }}:${{ steps.image.outputs.commit_tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Report image references
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+          BRANCH_TAG: ${{ steps.image.outputs.branch_tag }}
+          COMMIT_TAG: ${{ steps.image.outputs.commit_tag }}
+        run: |
+          {
+            echo "### Manually built branch image"
+            echo
+            echo "Branch: \`$GITHUB_REF_NAME\`"
+            echo "Commit: \`$GITHUB_SHA\`"
+            echo
+            echo "Use this mutable branch tag in \`.env\`:"
+            echo
+            echo "\`ROOMBA_IMAGE=$IMAGE:$BRANCH_TAG\`"
+            echo
+            echo "Pinned commit tag:"
+            echo
+            echo "\`ROOMBA_IMAGE=$IMAGE:$COMMIT_TAG\`"
+          } >> "$GITHUB_STEP_SUMMARY"
