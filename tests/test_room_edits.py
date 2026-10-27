@@ -344,7 +344,7 @@ class RoomEditorTests(unittest.TestCase):
             document["state"]["reported"]["cleanMissionStatus"] = mission
             db.execute("UPDATE shadows SET document=? WHERE topic=?", (json.dumps(document), topic))
 
-    def test_inventory_probes_available_locked_maps_on_each_pass_without_missing_map_retries(self):
+    def test_inventory_probes_each_locked_map_only_once_per_connection(self):
         from unittest.mock import Mock
 
         target, missing = self.robot + "-100", self.robot + "-200"
@@ -372,9 +372,15 @@ class RoomEditorTests(unittest.TestCase):
                 )
         self.assertEqual(
             [call.args[1]()["p2map_id"] for call in session.publish_once.call_args_list],
-            [target, target],
+            [target],
         )
         self.assertFalse(session.map_refresh_in_progress)
+        self.lock_map(target, created=101)
+        with patch("roomba_cloud.maps.catalog.saved_maps", return_value={target: {}}):
+            bootstrap_once(
+                self.shadows.path, self.uploads.path, self.robot, session, include_missing=False
+            )
+        self.assertEqual(session.publish_once.call_count, 2)
         with contextlib.closing(sqlite3.connect(self.shadows.path)) as db, db:
             db.execute("UPDATE room_edits SET released_at=200 WHERE map_id=?", (target,))
         session.reset_mock()

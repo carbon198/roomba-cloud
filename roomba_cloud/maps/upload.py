@@ -52,6 +52,7 @@ class MapUploadService:
     """Coordinate MQTT and HTTPS processes through private SQLite and sibling archives."""
 
     TYPES = ("uploadP2MapSmart", "uploadP2MapMission", "uploadP2MapLive")
+    MAX_ACTIVE_UPLOADS = 1000
 
     def __init__(self, path, base_url=None):
         self.path = Path(path)
@@ -176,6 +177,10 @@ class MapUploadService:
             heartbeat = db.execute("SELECT heartbeat FROM receiver WHERE id=1").fetchone()
             if heartbeat is None or not 0 <= now - heartbeat[0] <= 15:
                 raise ValueError("Map upload receiver is not reporting ready")
+            db.execute(
+                "DELETE FROM uploads WHERE status IN ('pending','failed') AND expires<?",
+                (now,),
+            )
             existing = db.execute(
                 "SELECT token FROM uploads WHERE robot_id=? AND xfer_type=? AND xfer_id=? "
                 "AND status='pending' AND expires>=?",
@@ -184,7 +189,12 @@ class MapUploadService:
             if existing:
                 token = existing[0]
             else:
-                if db.execute("SELECT count(*) FROM uploads").fetchone()[0] >= 1000:
+                active_uploads = db.execute(
+                    "SELECT count(*) FROM uploads WHERE status='receiving' "
+                    "OR (status='pending' AND expires>=?)",
+                    (now,),
+                ).fetchone()[0]
+                if active_uploads >= self.MAX_ACTIVE_UPLOADS:
                     raise ValueError("Map upload request count limit reached")
                 token = secrets.token_hex(32)
                 db.execute(

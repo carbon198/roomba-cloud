@@ -265,10 +265,15 @@ def clear_uploaded_locks(
 
 
 def bootstrap_once(shadow_db, upload_db, robot_id, session, include_missing=True):
-    """Probe missing maps once per connection and locked maps on inventory reports."""
+    """Probe missing maps once and each locked map at most once per connection."""
     from roomba_cloud.cloud_http import log
     from roomba_cloud.robot_commands import CommandError
     from roomba_cloud.maps.catalog import saved_maps
+
+    attempted = getattr(session, "map_bootstrap_attempted_ids", None)
+    if not isinstance(attempted, set):
+        attempted = set()
+        session.map_bootstrap_attempted_ids = attempted
 
     try:
         require_idle(shadow_db, robot_id)
@@ -278,14 +283,14 @@ def bootstrap_once(shadow_db, upload_db, robot_id, session, include_missing=True
                 "SELECT document FROM shadows WHERE topic=?",
                 (f"$aws/things/{robot_id}/shadow/name/ro-currentstate",),
             ).fetchone()
-            locked = {
-                item[0]
-                for item in db.execute(
-                    "SELECT DISTINCT map_id FROM room_edits WHERE robot_id=? "
-                    "AND map_id IS NOT NULL AND released_at IS NULL AND operation!='delete'",
+            locked = dict(
+                db.execute(
+                    "SELECT map_id,MAX(transaction_id) FROM room_edits WHERE robot_id=? "
+                    "AND map_id IS NOT NULL AND released_at IS NULL AND operation!='delete' "
+                    "GROUP BY map_id",
                     (robot_id,),
                 )
-            }
+            )
             deleting = {
                 item[0]
                 for item in db.execute(
@@ -322,7 +327,15 @@ def bootstrap_once(shadow_db, upload_db, robot_id, session, include_missing=True
                 targets.append(identifier)
         if not targets:
             log("map_bootstrap_skipped", reason="all reported maps available")
-        for target in targets:
+            return
+        unattempted = [
+            target for target in targets if (target, locked.get(target)) not in attempted
+        ]
+        if not unattempted:
+            log("map_bootstrap_skipped", reason="map probes already sent this connection")
+            return
+        for target in unattempted:
+            attempted.add((target, locked.get(target)))
             try:
                 with contextlib.closing(sqlite3.connect(shadow_db, timeout=10)) as db, db:
                     cursor = db.execute(
