@@ -101,6 +101,90 @@ class MapUploadTests(unittest.TestCase):
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
             self.assertNotIn("private", path.read_bytes().decode("latin1"))
 
+    def test_expired_requests_are_cleaned_and_historical_uploads_do_not_fill_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            service = maps.MapUploadService(Path(directory) / "uploads.db", "https://localhost")
+            with patch("roomba_cloud.maps.upload.time.time", return_value=100):
+                service.heartbeat()
+                with service.connect() as db, db:
+                    rows = [
+                        (f"{index:064x}", self.robot, "uploadP2MapMission", index, 50, "complete")
+                        for index in range(1000)
+                    ]
+                    rows.extend(
+                        (
+                            (f"{1000:064x}", self.robot, "uploadP2MapMission", 1000, 99, "pending"),
+                            (f"{1001:064x}", self.robot, "uploadP2MapMission", 1001, 99, "failed"),
+                            (
+                                f"{1002:064x}",
+                                self.robot,
+                                "uploadP2MapMission",
+                                1002,
+                                200,
+                                "pending",
+                            ),
+                            (
+                                f"{1003:064x}",
+                                self.robot,
+                                "uploadP2MapMission",
+                                1003,
+                                200,
+                                "receiving",
+                            ),
+                        )
+                    )
+                    db.executemany(
+                        "INSERT INTO uploads(token,robot_id,xfer_type,xfer_id,expires,status) "
+                        "VALUES (?,?,?,?,?,?)",
+                        rows,
+                    )
+                _, response = service.respond(
+                    self.topic, self.request(identifier=12345), self.robot
+                )
+                self.assertEqual(response["status"], "success")
+                with service.connect() as db:
+                    self.assertEqual(
+                        db.execute(
+                            "SELECT count(*) FROM uploads WHERE status='complete'"
+                        ).fetchone()[0],
+                        1000,
+                    )
+                    self.assertEqual(
+                        db.execute(
+                            "SELECT count(*) FROM uploads WHERE status='pending'"
+                        ).fetchone()[0],
+                        2,
+                    )
+                    self.assertEqual(
+                        db.execute("SELECT count(*) FROM uploads WHERE status='failed'").fetchone()[
+                            0
+                        ],
+                        0,
+                    )
+                    self.assertEqual(
+                        db.execute(
+                            "SELECT count(*) FROM uploads WHERE status='receiving'"
+                        ).fetchone()[0],
+                        1,
+                    )
+
+    def test_active_upload_count_is_still_bounded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            service = maps.MapUploadService(Path(directory) / "uploads.db", "https://localhost")
+            with patch("roomba_cloud.maps.upload.time.time", return_value=100):
+                service.heartbeat()
+                with service.connect() as db, db:
+                    db.executemany(
+                        "INSERT INTO uploads(token,robot_id,xfer_type,xfer_id,expires,status) "
+                        "VALUES (?,?,?,?,?,'pending')",
+                        [
+                            (f"{index:064x}", self.robot, "uploadP2MapMission", index, 200)
+                            for index in range(service.MAX_ACTIVE_UPLOADS)
+                        ],
+                    )
+                with self.assertRaisesRegex(ValueError, "request count limit"):
+                    service.respond(self.topic, self.request(identifier=12345), self.robot)
+
     def test_private_paths_and_https_origin(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "uploads.db"

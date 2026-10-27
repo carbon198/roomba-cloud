@@ -80,6 +80,7 @@ class CommandSession:
         self.reason: int | None = None
         self.closed = False
         self.map_bootstrap_attempted = False
+        self.map_bootstrap_attempted_ids: set[tuple[str, int | None]] = set()
         self.map_refresh_in_progress = False
 
     def __getattr__(self, name):
