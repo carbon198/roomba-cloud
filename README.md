@@ -30,6 +30,9 @@ Other V4 models have not been verified.
   reachable from the robot and 443 reachable from Home Assitant
 - A Bluetooth-capable computer near the robot for provisioning, with Python
   and Bluetooth access. **This can be a different computer from the server.**
+- ⚠️ The roomba requires an NTP server to continue functioning. You can either allow
+  NTP traffic from it to the internet, or setup your own NTP server and point
+  `*.irobot.pool.ntp.org` to it.
 
 **Keep the emulator on a trusted, firewalled LAN. Do not expose it to the
 Internet.**
