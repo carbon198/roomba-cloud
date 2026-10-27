@@ -376,7 +376,7 @@ Change Wi-Fi.
 
 **Q:** Can I use my existing maps? **A:** Yes please do, the emulator will pull them from the robot automatically
 
-**Q:** Should I block the Roomba's internet? **A:** I do, and you probably should. I can't guarantee they won't block this provisioning process in the future.
+**Q:** Should I block the Roomba's internet? **A:** I do, and you probably should. I can't guarantee they won't block this provisioning process in the future. Be sure to provide NTP server access to it as detailed in the Requirements section above.
 
 **Q:** Can this brick the Roomba? **A:** No not to my knowledge, we aren't flashing the firmware. Using the map editor always entails some risk you might lose or corrupt your maps, but that's the extent of the risk.
 
