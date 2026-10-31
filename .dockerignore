@@ -27,6 +27,7 @@
 !roomba_cloud/maps/upload.py
 !roomba_cloud/maps/preview.py
 !roomba_cloud/maps/catalog.py
+!roomba_cloud/maps/map_details.py
 !roomba_cloud/maps/controls.py
 !roomba_cloud/maps/room_edits.py
 !roomba_cloud/maps/live_position.py
