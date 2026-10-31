@@ -289,8 +289,7 @@ class RoomCatalogTests(unittest.TestCase):
 
         self.service.respond(
             f"$aws/things/{self.robot_id}/shadow/name/ro-currentstate/update",
-            b'{"state":{"reported":{"p2maps":['
-            b'{"p2map_id":"map-one","p2mapv_id":"new-version"}]}}}',
+            b'{"state":{"reported":{"p2maps":[{"p2map_id":"map-one","p2mapv_id":"new-version"}]}}}',
             self.robot_id,
         )
         with self.assertRaisesRegex(MapDetailsError, "requested_maps_not_fully_available"):

@@ -524,9 +524,7 @@ class MapDetailsDispatchTests(unittest.TestCase):
             ):
                 observer.start()
                 try:
-                    client.sendall(
-                        packet(0x82, b"\0\x01" + mqtt_string(response_topic) + b"\0")
-                    )
+                    client.sendall(packet(0x82, b"\0\x01" + mqtt_string(response_topic) + b"\0"))
                     self.assertEqual(
                         probe.read_frame(client, 1, bytearray()),
                         (0x90, b"\0\x01\0"),

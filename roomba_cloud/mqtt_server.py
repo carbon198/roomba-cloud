@@ -708,9 +708,7 @@ def observe(
                                 peer=peer,
                                 topic=topic,
                                 map_count=len(document["maps"]),
-                                region_count=sum(
-                                    len(item["regions"]) for item in document["maps"]
-                                ),
+                                region_count=sum(len(item["regions"]) for item in document["maps"]),
                             )
             elif fields["topic"] == base_topic + "/matter/fabric/req":
                 log(

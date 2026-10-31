@@ -49,15 +49,15 @@ def _parse_request(payload):
         isinstance(request_id, str)
         and 0 < len(request_id) <= MAX_REQUEST_ID_LENGTH
         and not any(ord(char) < 32 for char in request_id)
-    ) or (
-        type(request_id) is int and 0 <= request_id <= 2**63 - 1
-    )
+    ) or (type(request_id) is int and 0 <= request_id <= 2**63 - 1)
     map_ids = request.get("p2map_ids")
     if (
         not valid_request_id
         or not isinstance(map_ids, list)
         or not 1 <= len(map_ids) <= MAX_MAPS_PER_REQUEST
-        or any(not isinstance(map_id, str) or not IDENTIFIER.fullmatch(map_id) for map_id in map_ids)
+        or any(
+            not isinstance(map_id, str) or not IDENTIFIER.fullmatch(map_id) for map_id in map_ids
+        )
         or len(set(map_ids)) != len(map_ids)
     ):
         raise MapDetailsError("invalid_request_schema")
@@ -84,7 +84,9 @@ def respond(shadow_db, upload_db, topic, payload, robot_id):
                 raise MapDetailsError("requested_maps_not_fully_available")
             regions = [
                 {"region_id": region_id, "region_type": "rid", "name": name}
-                for region_id, name in sorted(item["rooms"].items(), key=lambda entry: int(entry[0]))
+                for region_id, name in sorted(
+                    item["rooms"].items(), key=lambda entry: int(entry[0])
+                )
             ]
             response_maps.append(
                 {
