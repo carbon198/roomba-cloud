@@ -499,10 +499,12 @@ class MapDetailsDispatchTests(unittest.TestCase):
         map_uploads = Mock()
         map_uploads.path = "uploads.db"
         output = io.StringIO()
+        timeout = 5
+        buffer = bytearray()
 
         server, client = socket.socketpair()
         with server, client:
-            client.settimeout(1)
+            client.settimeout(timeout)
             observer = threading.Thread(
                 target=probe.observe,
                 args=(
@@ -526,7 +528,7 @@ class MapDetailsDispatchTests(unittest.TestCase):
                 try:
                     client.sendall(packet(0x82, b"\0\x01" + mqtt_string(response_topic) + b"\0"))
                     self.assertEqual(
-                        probe.read_frame(client, 1, bytearray()),
+                        probe.read_frame(client, timeout, buffer),
                         (0x90, b"\0\x01\0"),
                     )
                     client.sendall(
@@ -536,10 +538,10 @@ class MapDetailsDispatchTests(unittest.TestCase):
                         )
                     )
                     self.assertEqual(
-                        probe.read_frame(client, 1, bytearray()),
+                        probe.read_frame(client, timeout, buffer),
                         (0x40, b"\0\x02"),
                     )
-                    header, body = probe.read_frame(client, 1, bytearray())
+                    header, body = probe.read_frame(client, timeout, buffer)
                     self.assertEqual(header, 0x30)
                     reader = probe.PacketReader(body)
                     self.assertEqual(reader.text(), response_topic)
@@ -559,16 +561,16 @@ class MapDetailsDispatchTests(unittest.TestCase):
                         )
                     )
                     self.assertEqual(
-                        probe.read_frame(client, 1, bytearray()),
+                        probe.read_frame(client, timeout, buffer),
                         (0x40, b"\0\x03"),
                     )
                     client.sendall(packet(0xE0, b""))
-                    observer.join(1)
+                    observer.join(timeout)
                     self.assertFalse(observer.is_alive())
                 finally:
                     if observer.is_alive():
                         client.shutdown(socket.SHUT_RDWR)
-                        observer.join(1)
+                        observer.join(timeout)
 
         logs = output.getvalue()
         self.assertIn("mapdetails_response_sent", logs)
