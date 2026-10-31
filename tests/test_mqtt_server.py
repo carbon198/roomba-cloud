@@ -475,6 +475,108 @@ class ConnectTests(unittest.TestCase):
                 probe.read_connect(conn, 10)
 
 
+class MapDetailsDispatchTests(unittest.TestCase):
+    def test_map_details_response_and_deferred_matter_request(self):
+        robot_id = "test-robot"
+        base_topic = f"v011-irbthbu/things/{robot_id}"
+        request_topic = base_topic + "/mapdetails/req"
+        response_topic = base_topic + "/mapdetails/resp"
+        matter_topic = base_topic + "/matter/fabric/req"
+        payload = b'{"request_id":7,"p2map_ids":["map-one"]}'
+        document = {
+            "request_id": 7,
+            "maps": [
+                {
+                    "p2map_id": "map-one",
+                    "p2mapv_id": "1.0",
+                    "regions": [{"region_id": "1", "region_type": "rid", "name": "Kitchen"}],
+                }
+            ],
+        }
+        shadows = Mock()
+        shadows.path = "shadows.db"
+        shadows.respond.return_value = None
+        map_uploads = Mock()
+        map_uploads.path = "uploads.db"
+        output = io.StringIO()
+
+        server, client = socket.socketpair()
+        with server, client:
+            client.settimeout(1)
+            observer = threading.Thread(
+                target=probe.observe,
+                args=(
+                    server,
+                    "127.0.0.1",
+                    {"keepalive_seconds": 30, "protocol_version": 4, "client_id": robot_id},
+                    bytearray(),
+                    None,
+                ),
+                kwargs={"shadows": shadows, "map_uploads": map_uploads},
+            )
+            with (
+                patch.object(
+                    probe,
+                    "respond_map_details",
+                    return_value=(response_topic, document),
+                ) as responder,
+                contextlib.redirect_stdout(output),
+            ):
+                observer.start()
+                try:
+                    client.sendall(
+                        packet(0x82, b"\0\x01" + mqtt_string(response_topic) + b"\0")
+                    )
+                    self.assertEqual(
+                        probe.read_frame(client, 1, bytearray()),
+                        (0x90, b"\0\x01\0"),
+                    )
+                    client.sendall(
+                        packet(
+                            0x32,
+                            mqtt_string(request_topic) + b"\0\x02" + payload,
+                        )
+                    )
+                    self.assertEqual(
+                        probe.read_frame(client, 1, bytearray()),
+                        (0x40, b"\0\x02"),
+                    )
+                    header, body = probe.read_frame(client, 1, bytearray())
+                    self.assertEqual(header, 0x30)
+                    reader = probe.PacketReader(body)
+                    self.assertEqual(reader.text(), response_topic)
+                    self.assertEqual(json.loads(body[reader.pos :]), document)
+                    responder.assert_called_once_with(
+                        "shadows.db",
+                        "uploads.db",
+                        request_topic,
+                        payload,
+                        robot_id,
+                    )
+
+                    client.sendall(
+                        packet(
+                            0x32,
+                            mqtt_string(matter_topic) + b"\0\x03" + b'{"request_id":1}',
+                        )
+                    )
+                    self.assertEqual(
+                        probe.read_frame(client, 1, bytearray()),
+                        (0x40, b"\0\x03"),
+                    )
+                    client.sendall(packet(0xE0, b""))
+                    observer.join(1)
+                    self.assertFalse(observer.is_alive())
+                finally:
+                    if observer.is_alive():
+                        client.shutdown(socket.SHUT_RDWR)
+                        observer.join(1)
+
+        logs = output.getvalue()
+        self.assertIn("mapdetails_response_sent", logs)
+        self.assertIn("matter_fabric_request_unsupported", logs)
+
+
 class TLSIntegrationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

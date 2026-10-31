@@ -14,6 +14,7 @@ import zlib
 
 from roomba_cloud.maps.upload import MapUploadService
 from roomba_cloud.maps.catalog import catalog, decode_rooms, read_archive, room_command, wire_fields
+from roomba_cloud.maps.map_details import MapDetailsError, respond as respond_map_details
 from roomba_cloud.robot_commands import (
     CommandError,
     CommandRegistry,
@@ -234,6 +235,86 @@ class RoomCatalogTests(unittest.TestCase):
         )
         self.assertFalse(catalog(self.service.path, self.uploads.path, "c" * 32))
         self.assertFalse(catalog(self.service.path, None, self.robot_id))
+
+    def test_map_details_returns_requested_current_map_metadata(self):
+        topic, response = respond_map_details(
+            self.service.path,
+            self.uploads.path,
+            f"v011-irbthbu/things/{self.robot_id}/mapdetails/req",
+            b'{"request_id":"request-7","p2map_ids":["map-two","map-one"]}',
+            self.robot_id,
+        )
+        self.assertEqual(topic, f"v011-irbthbu/things/{self.robot_id}/mapdetails/resp")
+        self.assertEqual(
+            response,
+            {
+                "request_id": "request-7",
+                "maps": [
+                    {
+                        "p2map_id": "map-two",
+                        "p2mapv_id": "2.0",
+                        "regions": [
+                            {
+                                "region_id": "1",
+                                "region_type": "rid",
+                                "name": "Upstairs",
+                            }
+                        ],
+                    },
+                    {
+                        "p2map_id": "map-one",
+                        "p2mapv_id": "1.0",
+                        "regions": [
+                            {
+                                "region_id": "1",
+                                "region_type": "rid",
+                                "name": "Room one",
+                            },
+                            {
+                                "region_id": "2",
+                                "region_type": "rid",
+                                "name": "Room two",
+                            },
+                        ],
+                    },
+                ],
+            },
+        )
+
+    def test_map_details_never_returns_partial_or_stale_map_success(self):
+        topic = f"v011-irbthbu/things/{self.robot_id}/mapdetails/req"
+        request = b'{"request_id":7,"p2map_ids":["map-one","missing-map"]}'
+        with self.assertRaisesRegex(MapDetailsError, "requested_maps_not_fully_available"):
+            respond_map_details(self.service.path, self.uploads.path, topic, request, self.robot_id)
+
+        self.service.respond(
+            f"$aws/things/{self.robot_id}/shadow/name/ro-currentstate/update",
+            b'{"state":{"reported":{"p2maps":['
+            b'{"p2map_id":"map-one","p2mapv_id":"new-version"}]}}}',
+            self.robot_id,
+        )
+        with self.assertRaisesRegex(MapDetailsError, "requested_maps_not_fully_available"):
+            respond_map_details(
+                self.service.path,
+                self.uploads.path,
+                topic,
+                b'{"request_id":7,"p2map_ids":["map-one"]}',
+                self.robot_id,
+            )
+
+    def test_map_details_rejects_malformed_and_duplicate_requests(self):
+        topic = f"v011-irbthbu/things/{self.robot_id}/mapdetails/req"
+        for request in (
+            b'{"request_id":true,"p2map_ids":["map-one"]}',
+            b'{"request_id":1,"p2map_ids":["map-one","map-one"]}',
+            b'{"request_id":1,"p2map_ids":["map-one"],"request_id":2}',
+            b'{"request_id":1,"p2map_ids":[]}',
+        ):
+            with self.subTest(request=request):
+                with self.assertRaises(MapDetailsError):
+                    respond_map_details(
+                        self.service.path, self.uploads.path, topic, request, self.robot_id
+                    )
 
     def test_empty_duplicate_unknown_and_cross_map_selection_never_sends(self):
         robot = FakeRobot()

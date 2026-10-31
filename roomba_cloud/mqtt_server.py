@@ -13,18 +13,12 @@ by the tested 505. Its certificate acceptance is compatibility, not verification
 of robot identity. See ClientCertificateTransport and the C source for pipe
 framing; never interpret its first JSON line as an MQTT packet.
 
-Cloud map research not implemented as a responder:
-``v011-irbthbu/things/<id>/mapdetails/req`` carries request_id and p2map_ids.
-Broker registration 0x4b24a0, event 0x139 routing 0x4a5470, Matter handling
-0x47b0d0 and forwarding 0x47917c lead to chip-irobot-app. Matter recognition
-0xb1108, map parsing 0x72acc, restoration 0x73658 and room parsing 0x74508
-suggest an envelope echoing request_id with a maps array containing p2map_id,
-p2mapv_id, optional name and regions (region_id, region_type="rid", optional
-name). This is metadata restoration, NOT map geometry download. No end-to-end
-response has been validated, so requests are only captured. A future responder
-must use complete, robot-scoped, version-matched archives: Matter clears and
-rebuilds supported maps/areas on inventory changes, so a partial/empty success
-for unavailable archives could erase supported areas. Fail explicitly instead.
+Map-details requests carry ``request_id`` and ``p2map_ids``. The response schema
+is inferred from the retained firmware and remains unvalidated end-to-end. Replies
+are limited to complete, robot-scoped, version-matched archives because Matter
+clears and rebuilds supported maps/areas on inventory changes; unavailable maps
+must never produce a partial/empty success. Matter fabric requests are logged
+but receive no application response until their schema and source data are known.
 Firmware hashes and other address provenance are recorded in room_edits.
 """
 
@@ -48,6 +42,7 @@ import time
 from roomba_cloud.robot_mqtt import ProtocolError, extract_packet, mqtt_string, packet
 from roomba_cloud.shadow_service import ShadowService
 from roomba_cloud.maps.upload import MapUploadService
+from roomba_cloud.maps.map_details import MapDetailsError, respond as respond_map_details
 from roomba_cloud.cloud_http import log, parse_client_hello
 
 
@@ -663,6 +658,68 @@ def observe(
                             transfer_type=document["reqParams"]["xferType"],
                             response_delay_ms=map_response_delay_ms,
                         )
+        if event == "mqtt_publish":
+            base_topic = f"v011-irbthbu/things/{metadata['client_id']}"
+            request_topic = base_topic + "/mapdetails/req"
+            if fields["topic"] == request_topic:
+                response_topic = base_topic + "/mapdetails/resp"
+                if shadows is None or map_uploads is None:
+                    log(
+                        "mapdetails_response_unavailable",
+                        peer=peer,
+                        reason="map storage is not configured",
+                    )
+                elif not any(topic_matches(s, response_topic) for s in subscriptions):
+                    log(
+                        "mapdetails_response_unavailable",
+                        peer=peer,
+                        reason="response topic is not subscribed",
+                    )
+                else:
+                    payload = body[len(body) - fields["payload_bytes"] :]
+                    try:
+                        reply = respond_map_details(
+                            shadows.path,
+                            map_uploads.path,
+                            fields["topic"],
+                            payload,
+                            metadata["client_id"],
+                        )
+                    except MapDetailsError as exc:
+                        log("mapdetails_request_rejected", peer=peer, reason=exc.reason)
+                    except (OSError, sqlite3.Error, ValueError, TypeError, RecursionError) as exc:
+                        log(
+                            "mapdetails_response_failed",
+                            peer=peer,
+                            error_type=type(exc).__name__,
+                        )
+                    else:
+                        if reply is not None:
+                            topic, document = reply
+                            encoded = json.dumps(
+                                document, ensure_ascii=True, allow_nan=False
+                            ).encode()
+                            wire = mqtt_string(topic) + (
+                                b"\0" if metadata["protocol_version"] == 5 else b""
+                            )
+                            conn.sendall(packet(0x30, wire + encoded))
+                            log(
+                                "mapdetails_response_sent",
+                                peer=peer,
+                                topic=topic,
+                                map_count=len(document["maps"]),
+                                region_count=sum(
+                                    len(item["regions"]) for item in document["maps"]
+                                ),
+                            )
+            elif fields["topic"] == base_topic + "/matter/fabric/req":
+                log(
+                    "matter_fabric_request_unsupported",
+                    peer=peer,
+                    topic=fields["topic"],
+                    payload_bytes=fields["payload_bytes"],
+                    reason="response schema and fabric data are not validated",
+                )
         if done:
             return
 
