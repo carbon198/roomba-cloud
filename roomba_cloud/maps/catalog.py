@@ -216,8 +216,12 @@ def archive_maps(path, size, digest, smart_only=False):
 
 
 @contextlib.contextmanager
-def map_catalog(shadow_db, upload_db, robot_id):
-    """Resolve current versions while holding the archive-pruning read lock."""
+def map_catalog(shadow_db, upload_db, robot_id, version_matched_only=False):
+    """Resolve current versions while holding the archive-pruning read lock.
+
+    When requested, include only archive members whose saved version matches the
+    robot's current inventory. This is required for cloud map restoration.
+    """
     if upload_db is None:
         yield {}
         return
@@ -237,7 +241,7 @@ def map_catalog(shadow_db, upload_db, robot_id):
             "AND status='complete' ORDER BY rowid DESC LIMIT 1000",
             (robot_id,),
         ).fetchall()
-        yield catalog_maps(rows, upload_db, current)
+        yield catalog_maps(rows, upload_db, current, version_matched_only)
 
 
 def saved_maps(shadow_db, upload_db, robot_id):
@@ -246,7 +250,7 @@ def saved_maps(shadow_db, upload_db, robot_id):
         return maps
 
 
-def catalog_maps(rows, upload_db, current):
+def catalog_maps(rows, upload_db, current, version_matched_only=False):
     """Select newest acceptable members while preserving saved versus archive versions."""
     found = {}
     for token, size, digest, transfer_type in rows:
@@ -260,7 +264,10 @@ def catalog_maps(rows, upload_db, current):
             if (
                 map_id not in current
                 or map_id in found
-                or (transfer_type == "uploadP2MapSmart" and current[map_id] != version)
+                or (
+                    (version_matched_only or transfer_type == "uploadP2MapSmart")
+                    and current[map_id] != version
+                )
             ):
                 continue
             found[map_id] = {
