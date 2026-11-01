@@ -727,7 +727,12 @@ def observe(
                             metadata["client_id"],
                         )
                     except MapDetailsError as exc:
-                        log("mapdetails_request_rejected", peer=peer, reason=exc.reason)
+                        log(
+                            "mapdetails_request_rejected",
+                            peer=peer,
+                            reason=exc.reason,
+                            map_ids=exc.map_ids,
+                        )
                     except (OSError, sqlite3.Error, ValueError, TypeError, RecursionError) as exc:
                         log(
                             "mapdetails_response_failed",
