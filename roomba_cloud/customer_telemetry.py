@@ -32,7 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
 from os import PathLike
-from typing import NotRequired, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 from roomba_cloud.ha_mqtt_publish import (
     FIELDS,
@@ -121,7 +121,7 @@ class Position(TypedDict):
 
 
 class DockReport(TypedDict):
-    payload: dict
+    payload: dict[str, Any]
     received_at: float
 
 
@@ -188,7 +188,7 @@ def snapshot(
     ) as db:
         db.execute("BEGIN")
         tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        dock_reports = {}
+        dock_reports: dict[str, DockReport] = {}
         if "dock_reports" in tables:
             dock_reports = {
                 report_type: {"payload": json.loads(document), "received_at": received_at}
