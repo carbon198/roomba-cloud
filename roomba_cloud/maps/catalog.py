@@ -244,9 +244,9 @@ def map_catalog(shadow_db, upload_db, robot_id, version_matched_only=False):
         yield catalog_maps(rows, upload_db, current, version_matched_only)
 
 
-def saved_maps(shadow_db, upload_db, robot_id):
+def saved_maps(shadow_db, upload_db, robot_id, version_matched_only=False):
     """Return detached metadata; callers reading archive files must use map_catalog instead."""
-    with map_catalog(shadow_db, upload_db, robot_id) as maps:
+    with map_catalog(shadow_db, upload_db, robot_id, version_matched_only) as maps:
         return maps
 
 

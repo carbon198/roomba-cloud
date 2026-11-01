@@ -284,15 +284,20 @@ class RoomCatalogTests(unittest.TestCase):
     def test_map_details_never_returns_partial_or_stale_map_success(self):
         topic = f"v011-irbthbu/things/{self.robot_id}/mapdetails/req"
         request = b'{"request_id":7,"p2map_ids":["map-one","missing-map"]}'
-        with self.assertRaisesRegex(MapDetailsError, "requested_maps_not_fully_available"):
+        with self.assertRaisesRegex(
+            MapDetailsError, "requested_maps_not_fully_available"
+        ) as raised:
             respond_map_details(self.service.path, self.uploads.path, topic, request, self.robot_id)
+        self.assertEqual(raised.exception.map_ids, ["missing-map"])
 
         self.service.respond(
             f"$aws/things/{self.robot_id}/shadow/name/ro-currentstate/update",
             b'{"state":{"reported":{"p2maps":[{"p2map_id":"map-one","p2mapv_id":"new-version"}]}}}',
             self.robot_id,
         )
-        with self.assertRaisesRegex(MapDetailsError, "requested_maps_not_fully_available"):
+        with self.assertRaisesRegex(
+            MapDetailsError, "requested_maps_not_fully_available"
+        ) as raised:
             respond_map_details(
                 self.service.path,
                 self.uploads.path,
@@ -300,6 +305,7 @@ class RoomCatalogTests(unittest.TestCase):
                 b'{"request_id":7,"p2map_ids":["map-one"]}',
                 self.robot_id,
             )
+        self.assertEqual(raised.exception.map_ids, ["map-one"])
 
     def test_map_details_rejects_malformed_and_duplicate_requests(self):
         topic = f"v011-irbthbu/things/{self.robot_id}/mapdetails/req"

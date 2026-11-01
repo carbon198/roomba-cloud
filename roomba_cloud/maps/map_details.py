@@ -13,9 +13,10 @@ MAX_REQUEST_ID_LENGTH = 128
 class MapDetailsError(ValueError):
     """A safe request or availability failure that can be logged without payload data."""
 
-    def __init__(self, reason):
+    def __init__(self, reason, map_ids=()):
         super().__init__(reason)
         self.reason = reason
+        self.map_ids = list(map_ids)
 
 
 def _unique_object(pairs):
@@ -74,14 +75,17 @@ def respond(shadow_db, upload_db, topic, payload, robot_id):
 
     request_id, map_ids = _parse_request(payload)
     with map_catalog(shadow_db, upload_db, robot_id, version_matched_only=True) as maps:
-        if any(map_id not in maps for map_id in map_ids):
-            raise MapDetailsError("requested_maps_not_fully_available")
+        unavailable = [map_id for map_id in map_ids if map_id not in maps]
+        if unavailable:
+            raise MapDetailsError("requested_maps_not_fully_available", unavailable)
 
         response_maps = []
         for map_id in map_ids:
             item = maps[map_id]
-            if item["archive_version"] != item["version"] or not item["rooms"]:
-                raise MapDetailsError("requested_maps_not_fully_available")
+            if item["archive_version"] != item["version"]:
+                raise MapDetailsError("requested_maps_not_fully_available", [map_id])
+            if not item["rooms"]:
+                raise MapDetailsError("requested_maps_have_no_regions", [map_id])
             regions = [
                 {"region_id": region_id, "region_type": "rid", "name": name}
                 for region_id, name in sorted(
