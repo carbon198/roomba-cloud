@@ -106,6 +106,12 @@ class ShadowService:
                 "(robot_id TEXT PRIMARY KEY, ip TEXT NOT NULL, "
                 "first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL, sku TEXT)"
             )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS dock_reports "
+                "(robot_id TEXT NOT NULL, report_type TEXT NOT NULL, "
+                "document TEXT NOT NULL, received_at REAL NOT NULL, "
+                "PRIMARY KEY(robot_id,report_type))"
+            )
 
     @staticmethod
     def record_connection(db, robot_id, ip, sku=None):

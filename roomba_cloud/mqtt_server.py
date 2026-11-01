@@ -43,6 +43,7 @@ from roomba_cloud.robot_mqtt import ProtocolError, extract_packet, mqtt_string, 
 from roomba_cloud.shadow_service import ShadowService
 from roomba_cloud.maps.upload import MapUploadService
 from roomba_cloud.maps.map_details import MapDetailsError, respond as respond_map_details
+from roomba_cloud.dock_reports import DockReportError, REPORT_TOPICS, store_report
 from roomba_cloud.cloud_http import log, parse_client_hello
 
 
@@ -660,6 +661,46 @@ def observe(
                         )
         if event == "mqtt_publish":
             base_topic = f"v011-irbthbu/things/{metadata['client_id']}"
+            for report_type, suffix in REPORT_TOPICS.items():
+                if fields["topic"] != base_topic + "/" + suffix:
+                    continue
+                if shadows is None:
+                    log(
+                        "dock_report_unavailable",
+                        peer=peer,
+                        report_type=report_type,
+                        reason="shadow storage is not configured",
+                    )
+                    break
+                payload = body[len(body) - fields["payload_bytes"] :]
+                try:
+                    received_at = store_report(
+                        shadows.path, metadata["client_id"], report_type, payload
+                    )
+                except DockReportError as exc:
+                    log(
+                        "dock_report_rejected",
+                        peer=peer,
+                        report_type=report_type,
+                        reason=exc.reason,
+                    )
+                except (OSError, sqlite3.Error) as exc:
+                    log(
+                        "dock_report_failed",
+                        peer=peer,
+                        report_type=report_type,
+                        error_type=type(exc).__name__,
+                    )
+                else:
+                    shadows.notify(metadata["client_id"])
+                    log(
+                        "dock_report_stored",
+                        peer=peer,
+                        report_type=report_type,
+                        payload_bytes=fields["payload_bytes"],
+                        received_at=received_at,
+                    )
+                break
             request_topic = base_topic + "/mapdetails/req"
             if fields["topic"] == request_topic:
                 response_topic = base_topic + "/mapdetails/resp"
