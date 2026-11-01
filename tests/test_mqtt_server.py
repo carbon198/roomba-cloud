@@ -11,7 +11,7 @@ import subprocess
 import tempfile
 import threading
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import roomba_cloud.mqtt_server as probe
 from roomba_cloud.robot_mqtt import ProtocolError, mqtt_string, packet
@@ -575,6 +575,58 @@ class MapDetailsDispatchTests(unittest.TestCase):
         logs = output.getvalue()
         self.assertIn("mapdetails_response_sent", logs)
         self.assertIn("matter_fabric_request_unsupported", logs)
+
+
+class DockReportDispatchTests(unittest.TestCase):
+    def test_dock_report_is_stored_not_replied_to_and_wakes_telemetry(self):
+        robot_id = "a" * 32
+        topic = f"v011-irbthbu/things/{robot_id}/dock/paddry/report"
+        payload = b'{"reportType":"padDry","reportTime":1700000000,"pdState":701}'
+        shadows = Mock()
+        shadows.path = "shadows.db"
+        shadows.respond.return_value = None
+        output = io.StringIO()
+        timeout = 5
+        buffer = bytearray()
+
+        server, client = socket.socketpair()
+        with server, client:
+            client.settimeout(timeout)
+            observer = threading.Thread(
+                target=probe.observe,
+                args=(
+                    server,
+                    "127.0.0.1",
+                    {"keepalive_seconds": 30, "protocol_version": 4, "client_id": robot_id},
+                    bytearray(),
+                    None,
+                ),
+                kwargs={"shadows": shadows},
+            )
+            with (
+                patch.object(probe, "store_report", return_value=1700000001.5) as store,
+                contextlib.redirect_stdout(output),
+            ):
+                observer.start()
+                try:
+                    client.sendall(packet(0x32, mqtt_string(topic) + b"\0\x01" + payload))
+                    self.assertEqual(
+                        probe.read_frame(client, timeout, buffer),
+                        (0x40, b"\0\x01"),
+                    )
+                    client.sendall(packet(0xE0, b""))
+                    observer.join(timeout)
+                    self.assertFalse(observer.is_alive())
+                finally:
+                    if observer.is_alive():
+                        client.shutdown(socket.SHUT_RDWR)
+                        observer.join(timeout)
+
+        store.assert_called_once_with("shadows.db", robot_id, "paddry", payload)
+        self.assertEqual(shadows.notify.call_args_list, [call(robot_id), call(robot_id)])
+        logs = output.getvalue()
+        self.assertIn("dock_report_stored", logs)
+        self.assertNotIn("pdState", logs)
 
 
 class TLSIntegrationTests(unittest.TestCase):
