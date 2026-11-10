@@ -18,8 +18,10 @@ not a guess based on archive order or last seen map. No authoritative idle-time
 loaded-map signal or native map-selection dropdown has been established.
 
 segment_catalog_complete separates a partial room archive catalog from inventory
-deletion; settings/cleaning modes are capability-filtered. schema_version remains
-1 for these additive fields, preserving older clients that ignore extra keys.
+deletion; settings/cleaning modes are capability-filtered. The latest validated dock
+operation report per family is an additive optional extension; payloads are
+robot-scoped and bounded. schema_version remains 1 for additive fields,
+preserving older clients that ignore extra keys.
 """
 
 import time
@@ -30,7 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
 from os import PathLike
-from typing import NotRequired, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 from roomba_cloud.ha_mqtt_publish import (
     FIELDS,
@@ -118,6 +120,11 @@ class Position(TypedDict):
     expires_at: float
 
 
+class DockReport(TypedDict):
+    payload: dict[str, Any]
+    received_at: float
+
+
 class OverlayDescriptor(TypedDict):
     map_id: str
     revision: int
@@ -159,6 +166,7 @@ class TelemetrySnapshot(TypedDict):
     cleaning_modes: list[int]
     device: dict[str, str]
     acme_dns_challenge: DNSChallenge | None
+    dock_reports: dict[str, DockReport]
 
 
 def snapshot(
@@ -174,14 +182,23 @@ def snapshot(
     never as deletion-shaped success data.
     """
     values, timestamps, reported_at = telemetry(path, robot_id, CUSTOMER_FIELDS)
-    if reported_at is None and not values:
-        return None
     now = time.time()
     with contextlib.closing(
         sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)
     ) as db:
         db.execute("BEGIN")
         tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        dock_reports: dict[str, DockReport] = {}
+        if "dock_reports" in tables:
+            dock_reports = {
+                report_type: {"payload": json.loads(document), "received_at": received_at}
+                for report_type, document, received_at in db.execute(
+                    "SELECT report_type,document,received_at FROM dock_reports WHERE robot_id=?",
+                    (robot_id,),
+                )
+            }
+        if reported_at is None and not values and not dock_reports:
+            return None
         connected = None
         if "mqtt_sessions" in tables:
             connected = bool(
@@ -336,4 +353,5 @@ def snapshot(
         "cleaning_modes": cleaning_modes(path, robot_id),
         "device": device,
         "acme_dns_challenge": dns_challenge(acme_challenge_file),
+        "dock_reports": dock_reports,
     }

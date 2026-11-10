@@ -380,7 +380,7 @@ Change Wi-Fi.
 
 **Q:** Can this brick the Roomba? **A:** No not to my knowledge, we aren't flashing the firmware. Using the map editor always entails some risk you might lose or corrupt your maps, but that's the extent of the risk.
 
-**Q:** Do I need to backup the `/data` folder? **A:** Not really. All the historical state will be in Home Assistant. If you need to setup this project on a new server you can reprovision the robot, repoint Home Assistant and everything will continue working as normal.
+**Q:** Do I need to backup the `/data` folder? **A:** Home Assistant keeps recorder history for exposed sensors. The emulator also stores map archives and the latest dock operation reports in `/data`; back it up if you want to retain those caches when moving servers.
 
 **Q:** Can the emulator restore maps to a robot? **A:** I've been researching that but I haven't figured out how to get the robot to download them as yet.
 

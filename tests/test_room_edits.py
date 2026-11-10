@@ -188,6 +188,32 @@ class RoomEditorTests(unittest.TestCase):
         self.assertEqual([payload["p2map_id"] for payload in payloads], maps)
         self.assertEqual(len({payload["transaction_id"] for payload in payloads}), 2)
 
+    def test_bootstrap_reprobes_maps_with_only_stale_mission_archives(self):
+        from unittest.mock import Mock
+        from roomba_cloud.maps.catalog import saved_maps
+
+        map_id = self.robot + "-100"
+        self.mission_map(map_id=map_id)
+        self.assertEqual(
+            saved_maps(self.shadows.path, self.uploads.path, self.robot)[map_id]["archive_version"],
+            "mission-version",
+        )
+        self.assertNotIn(
+            map_id,
+            saved_maps(
+                self.shadows.path,
+                self.uploads.path,
+                self.robot,
+                version_matched_only=True,
+            ),
+        )
+
+        session = Mock()
+        payloads = []
+        session.publish_once.side_effect = lambda topic, document: payloads.append(document())
+        bootstrap_once(self.shadows.path, self.uploads.path, self.robot, session)
+        self.assertEqual([payload["p2map_id"] for payload in payloads], [map_id])
+
     def test_bootstrap_waits_for_fresh_inventory_and_runs_once_per_connection(self):
         from unittest.mock import Mock
         import roomba_cloud.mqtt_server as mqtt_probe

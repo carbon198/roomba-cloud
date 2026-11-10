@@ -277,7 +277,11 @@ def bootstrap_once(shadow_db, upload_db, robot_id, session, include_missing=True
 
     try:
         require_idle(shadow_db, robot_id)
-        available = saved_maps(shadow_db, upload_db, robot_id) if include_missing else {}
+        available = (
+            saved_maps(shadow_db, upload_db, robot_id, version_matched_only=True)
+            if include_missing
+            else {}
+        )
         with connect_read(shadow_db) as db:
             row = db.execute(
                 "SELECT document FROM shadows WHERE topic=?",
