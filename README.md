@@ -385,3 +385,26 @@ Change Wi-Fi.
 **Q:** Can the emulator restore maps to a robot? **A:** I've been researching that but I haven't figured out how to get the robot to download them as yet.
 
 **Q:** Do V4 Roombas not have a local MQTT server? **A:** They do, but it isn't for local robot control. It only turns on when sending it certain bluetooth commands and it appears to be for firmware provisioning. One promising thing about that is it looks like you can upload new firmware signing keys, so custom firmware for these robots may be possible in the future. 
+
+
+## DNS when blocking Internet access
+
+When isolating the robot from the Internet, redirect its outbound DNS requests
+(both UDP and TCP port 53) to your local DNS resolver. DHCP DNS settings alone
+may not be sufficient: a Roomba 505 has been observed querying hard-coded
+external resolvers, including `8.8.8.8` and `114.114.114.114`, during reconnects.
+Dropping these requests can cause DNS retries and delays.
+
+Configure the local resolver to return the emulator server's LAN address for
+your emulator hostname. If you provide local NTP, also point
+`*.irobot.pool.ntp.org` to your local NTP server and allow the robot to reach
+it on UDP port 123, as described in Requirements.
+
+Apply the DNS redirect only to the robot or its isolated IoT network, allow
+the redirected requests to reach the resolver, and keep other Internet access
+blocked. Use your router's DNS redirect/DNAT feature; the exact rules and how
+to persist them depend on the router platform.
+
+If the robot is already stuck offline, a robot restart may be needed before
+it retries connecting. DNS interception is not a general fix for every
+firmware, Wi-Fi, or server-side disconnection.
