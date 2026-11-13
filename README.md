@@ -74,15 +74,7 @@ Edit `.env` and set:
 
 ```dotenv
 HOSTNAME=roomba.example.com
-DISCOVERY_TTL=1800
 ```
-
-`DISCOVERY_TTL` controls how often the robot refreshes service discovery.
-The tested V4 firmware has a minimum of 1,800 seconds (30 minutes), so the
-default is `1800`; values below that are rejected. Increase it to reduce
-scheduled re-registration attempts on a stable local deployment. A higher
-value also delays the robot learning about discovery endpoint changes. The
-accepted range is 1800 through 2147483647 seconds.
 
 Leave the port and storage settings at their defaults.
 
@@ -203,9 +195,6 @@ With **host networking**, omit port mappings and set `HTTPS_PORT=443` and
 Set `HOSTNAME=roomba.example.com` to your DNS hostname. 
 Configure DNS as described in the Compose instructions.
 HTTPS is advertised on the standard public port 443.
-`DISCOVERY_TTL` defaults to 1800 seconds, the minimum observed in the tested
-V4 firmware. It accepts values from 1800 through 2147483647 seconds; higher
-values delay scheduled service discovery refreshes.
 
 For built-in Let's Encrypt, set these additional variables:
 
