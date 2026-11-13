@@ -1,6 +1,6 @@
 {
   "awsRegion": "us-east-1",
-  "discoveryTTL": 60,
+  "discoveryTTL": 1800,
   "httpBase": "https://roomba.example.com",
   "iotTopics": "$aws",
   "irbtTopics": "v011-irbthbu",

@@ -25,7 +25,7 @@ class DiscoveryTests(unittest.TestCase):
         self.assertIn(f"Content-Length: {len(body)}".encode(), header)
         document = json.loads(body)
         self.assertEqual(document["httpBase"], "https://roomba.example.com")
-        self.assertEqual(document["discoveryTTL"], 60)
+        self.assertEqual(document["discoveryTTL"], 1800)
         for key in ("mqtt", "mqttApp", "mqttAts"):
             self.assertEqual(document[key], "roomba.example.com")
 
