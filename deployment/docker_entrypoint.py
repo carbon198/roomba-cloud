@@ -23,11 +23,18 @@ def arguments(command, environment):
     hostname validation and supplied-certificate versus ACME exclusivity.
     """
     result = list(command or ["both"])
-    defaults = {"DATA_DIR": "/data", "BIND": "0.0.0.0", "HTTPS_PORT": "8443", "MQTT_PORT": "8883"}
+    defaults = {
+        "DATA_DIR": "/data",
+        "BIND": "0.0.0.0",
+        "HTTPS_PORT": "8443",
+        "MQTT_PORT": "8883",
+        "DISCOVERY_TTL": "1800",
+    }
     for name in (
         "HOSTNAME",
         "DATA_DIR",
         "CUSTOMER_TOKEN_FILE",
+        "DISCOVERY_TTL",
         "BIND",
         "HTTPS_PORT",
         "MQTT_PORT",

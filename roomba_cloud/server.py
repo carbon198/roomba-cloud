@@ -41,6 +41,8 @@ import time
 
 
 HEALTHCHECK_CLIENT_ID = "roomba-cloud-healthcheck"
+MIN_DISCOVERY_TTL = 1800
+MAX_DISCOVERY_TTL = 2**31 - 1
 
 
 def healthcheck(config, service):
@@ -114,6 +116,15 @@ class Configuration:
                 raise ValueError(
                     "Supply both --tls-cert and --tls-key, or both --acme-email and --acme-agree-tos"
                 )
+        if (
+            type(args.discovery_ttl) is not int
+            or not MIN_DISCOVERY_TTL <= args.discovery_ttl <= MAX_DISCOVERY_TTL
+        ):
+            raise ValueError(
+                f"discovery_ttl must be an integer between "
+                f"{MIN_DISCOVERY_TTL} and {MAX_DISCOVERY_TTL} seconds"
+            )
+        self.discovery_ttl = args.discovery_ttl
         hostname = args.hostname
         if not isinstance(hostname, str) or not hostname or any(c.isspace() for c in hostname):
             raise ValueError("hostname must be a DNS hostname without a scheme, path, or port")
@@ -179,7 +190,7 @@ class Configuration:
         """Return the tested V4 discovery fields, all pointing at this local deployment."""
         return {
             "awsRegion": "us-east-1",
-            "discoveryTTL": 60,
+            "discoveryTTL": self.discovery_ttl,
             "httpBase": self.https_base_url,
             "iotTopics": "$aws",
             "irbtTopics": "v011-irbthbu",
@@ -282,6 +293,14 @@ def parse_arguments(argv=None):
     parser.add_argument(
         "--customer-token-file",
         help="customer token path (default: DATA_DIR/customer-token.txt; created on first run)",
+    )
+    parser.add_argument(
+        "--discovery-ttl",
+        type=int,
+        default=MIN_DISCOVERY_TTL,
+        help=(
+            f"service discovery refresh interval in seconds (default/minimum {MIN_DISCOVERY_TTL})"
+        ),
     )
     parser.add_argument("--bind", default="0.0.0.0", help="listener address (default: 0.0.0.0)")
     parser.add_argument(

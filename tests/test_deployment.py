@@ -141,6 +141,7 @@ class ConfigurationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             config = Configuration(self.config(directory))
             config.prepare_state()
+            self.assertEqual(config.discovery_ttl, 1800)
             self.assertEqual(config.data_dir.stat().st_mode & 0o777, 0o700)
             self.assertEqual((config.data_dir / "shadows.sqlite3").stat().st_mode & 0o777, 0o600)
             mqtt = config.arguments("mqtt")
@@ -156,8 +157,17 @@ class ConfigurationTests(unittest.TestCase):
                 self.assertNotIn("--robot-ip", args)
             document = json.loads((config.data_dir / "discovery.json").read_text())
             self.assertEqual(document["mqtt"], "roomba.example.com")
+            self.assertEqual(document["discoveryTTL"], 1800)
             self.assertEqual(document["httpBase"], "https://roomba.example.com")
             self.assertEqual(document["vStream"], "https://roomba.example.com")
+
+    def test_discovery_ttl_can_be_increased_but_not_set_below_firmware_minimum(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Configuration(self.config(directory, discovery_ttl=86400))
+            self.assertEqual(config.discovery()["discoveryTTL"], 86400)
+            for ttl in (0, 1799, 2**31):
+                with self.subTest(ttl=ttl), self.assertRaisesRegex(ValueError, "discovery_ttl"):
+                    Configuration(self.config(directory, discovery_ttl=ttl))
 
     def test_invalid_configuration_fails_instead_of_using_defaults(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -281,6 +291,7 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(args.service, "both")
         self.assertEqual(config.data_dir, Path("/data"))
         self.assertEqual(config.customer_token_file, Path("/data/customer-token.txt"))
+        self.assertEqual(config.discovery_ttl, 1800)
         for name in ("ACME_AGREE_TOS", "ACME_STAGING"):
             with self.subTest(name=name), self.assertRaisesRegex(ValueError, "true or false"):
                 container_arguments([], {name: "yes"})
@@ -304,6 +315,7 @@ class ConfigurationTests(unittest.TestCase):
             "HOSTNAME": "roomba.example.com",
             "DATA_DIR": "/data/custom",
             "CUSTOMER_TOKEN_FILE": "/data/custom token.txt",
+            "DISCOVERY_TTL": "86400",
             "BIND": "127.0.0.1",
             "HTTPS_PORT": "9443",
             "MQTT_PORT": "9883",
@@ -318,6 +330,8 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(args.check_service, "mqtt")
         self.assertEqual(config.data_dir, Path("/data/custom"))
         self.assertEqual(config.customer_token_file, Path("/data/custom token.txt"))
+        self.assertEqual(config.discovery_ttl, 86400)
+        self.assertEqual(config.discovery()["discoveryTTL"], 86400)
         self.assertEqual(config.bind, "127.0.0.1")
         self.assertEqual(config.ports, {"https": 9443, "mqtt": 9883})
         self.assertEqual(config.https_base_url, "https://roomba.example.com")
