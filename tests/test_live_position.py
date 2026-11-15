@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import sqlite3
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -7,7 +8,7 @@ import io
 
 from PIL import Image
 
-from roomba_cloud.maps.live_position import snapshot, overlays, descriptors
+from roomba_cloud.maps.live_position import ingest, snapshot, overlays, descriptors
 from roomba_cloud.shadow_service import ShadowService
 from roomba_cloud.maps.preview import decode_geometry, render_png
 from test_map_preview import geometry
@@ -190,6 +191,130 @@ class LivePositionTests(unittest.TestCase):
         self.assertEqual(snapshot(self.path, self.robot)["sequence"], 1)
         self.send("livemap/update", {"map_update": {}})
         self.assertEqual(snapshot(self.path, self.robot)["sequence"], 1)
+
+    def test_ingest_rejects_invalid_timeline_coordinates_and_trail_limits(self):
+        timeline = self.prefix + "mission/timeline/report"
+        position = self.prefix + "livemap/update"
+        for payload in (b"[]", b"x" * (256 * 1024 + 1)):
+            with self.subTest(payload_size=len(payload)), self.assertRaises(ValueError):
+                ingest(self.path, self.robot, timeline, payload)
+
+        with self.assertRaisesRegex(ValueError, "mission timeline events"):
+            ingest(
+                self.path,
+                self.robot,
+                timeline,
+                b'{"nMssn":1,"mission_id":"one","event":{}}',
+            )
+        with self.assertRaisesRegex(ValueError, "Oversized mission timeline"):
+            ingest(
+                self.path,
+                self.robot,
+                timeline,
+                json.dumps({"nMssn": 1, "mission_id": "one", "event": [{}] * 1001}).encode(),
+            )
+        with self.assertRaisesRegex(ValueError, "relocation timestamp"):
+            ingest(
+                self.path,
+                self.robot,
+                timeline,
+                b'{"nMssn":1,"mission_id":"one","event":[{"type":"reloc","ts":true,"reloc":{}}]}',
+            )
+        self.relocate()
+        ingest(
+            self.path,
+            self.robot,
+            timeline,
+            b'{"nMssn":1,"mission_id":"one","event":[{"type":"reloc","ts":998,"reloc":{"p2mapId":"old-map"}}]}',
+        )
+        with self.assertRaisesRegex(ValueError, "live map identity"):
+            ingest(
+                self.path,
+                self.robot,
+                timeline,
+                b'{"nMssn":1,"mission_id":"one","event":[{"type":"reloc","ts":1000,"reloc":{"p2mapId":"invalid/map"}}]}',
+            )
+        with self.assertRaisesRegex(ValueError, "coordinate or activity"):
+            ingest(
+                self.path,
+                self.robot,
+                position,
+                b'{"pos_update":{"cur_path":[1,1000001,0,0,5,1000]},"update_expire_ts":1060}',
+            )
+
+        for index in range(10):
+            self.send(
+                "mission/timeline/report",
+                {
+                    "nMssn": 1,
+                    "mission_id": "one",
+                    "event": [
+                        {
+                            "type": "reloc",
+                            "ts": 999,
+                            "reloc": {"p2mapId": f"map-{index}"},
+                        }
+                    ],
+                },
+            )
+            self.send(
+                "livemap/update",
+                {
+                    "pos_update": {
+                        "cur_path": [index + 1, 0, 0, 0, 5, 1000],
+                    },
+                    "update_expire_ts": 1060,
+                },
+            )
+        self.send(
+            "mission/timeline/report",
+            {
+                "nMssn": 1,
+                "mission_id": "one",
+                "event": [{"type": "reloc", "ts": 999, "reloc": {"p2mapId": "map-10"}}],
+            },
+        )
+        with self.assertRaisesRegex(ValueError, "trail exceeds map limit"):
+            self.send(
+                "livemap/update",
+                {
+                    "pos_update": {"cur_path": [11, 0, 0, 0, 5, 1000]},
+                    "update_expire_ts": 1060,
+                },
+            )
+
+    def test_live_position_overlay_handles_missing_table_and_mission_change(self):
+        missing = Path(self.directory.name) / "missing-live-table.db"
+        with sqlite3.connect(missing):
+            pass
+        self.assertEqual(overlays(missing, self.robot), {})
+
+        self.relocate()
+        self.position()
+        self.report_mission(2, "two")
+        self.assertEqual(overlays(self.path, self.robot), {})
+
+    def test_ingest_ignores_empty_events_invalid_missions_and_docked_reports(self):
+        timeline = self.prefix + "mission/timeline/report"
+        self.send(
+            "mission/timeline/report",
+            {"nMssn": 1, "mission_id": "one", "event": []},
+        )
+        self.report_mission(1, "one", "charge")
+        ingest(
+            self.path,
+            self.robot,
+            timeline,
+            b'{"nMssn":1,"mission_id":"one","event":[{"type":"reloc","ts":1000,"reloc":{"p2mapId":"ignored"}}]}',
+        )
+        self.report_mission(1, "")
+        ingest(
+            self.path,
+            self.robot,
+            timeline,
+            b'{"nMssn":1,"mission_id":"","event":[{"type":"reloc","ts":1000,"reloc":{"p2mapId":"ignored"}}]}',
+        )
+        self.assertIsNone(snapshot(self.path, self.robot))
 
     def test_robot_marker_world_coordinates_and_heading(self):
         model = decode_geometry(geometry(dock=False))

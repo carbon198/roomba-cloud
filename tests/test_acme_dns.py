@@ -26,6 +26,16 @@ import test_deployment
 
 
 class ACMETests(unittest.TestCase):
+    def test_domain_and_challenge_reject_invalid_types_and_values(self):
+        with self.assertRaisesRegex(ValueError, "must be a DNS hostname"):
+            acme_dns.domain_name(None)
+        with (
+            self.challenge_environment(),
+            patch.dict(os.environ, {"CERTBOT_VALIDATION": "invalid"}),
+            self.assertRaisesRegex(ValueError, "Invalid DNS-01 TXT"),
+        ):
+            acme_dns.challenge()
+
     def test_challenge_file_is_exact_and_cleanup_leaves_it_unchanged(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "shared/challenge.json"
@@ -380,3 +390,72 @@ assert not result.stdout, result.stdout
         self.assertIn("acme_renewal_failed", output.getvalue())
         self.assertIn("one hour", output.getvalue())
         self.assertEqual(child.poll.call_count, 2)
+
+    def test_reload_failure_retries_and_forcefully_reaps_listener(self):
+        config = SimpleNamespace(tls_cert="cert", tls_key="key", arguments=Mock(return_value=[]))
+        certificates = Mock()
+        child = Mock()
+        child.poll.side_effect = [None, None, 9]
+        child.wait.side_effect = [subprocess.TimeoutExpired("https", 10), None]
+        with (
+            patch("roomba_cloud.acme_dns.fingerprint", side_effect=[b"old", b"new", b"new"]),
+            patch("roomba_cloud.acme_dns.time.monotonic", return_value=0),
+            patch("roomba_cloud.acme_dns.time.sleep") as sleep,
+            patch("roomba_cloud.acme_dns.ssl.SSLContext") as context,
+            patch("roomba_cloud.acme_dns.subprocess.Popen", return_value=child),
+            patch("roomba_cloud.acme_dns.log") as logged,
+            self.assertRaisesRegex(RuntimeError, "status 9"),
+        ):
+            context.return_value.load_cert_chain.side_effect = ValueError("invalid replacement")
+            acme_dns.serve(config, "https", certificates)
+        self.assertEqual(sleep.call_count, 2)
+        self.assertEqual(logged.call_args.args[0], "acme_certificate_reload_pending")
+        child.terminate.assert_called_once()
+        child.kill.assert_called_once()
+        self.assertEqual(child.wait.call_count, 2)
+
+    def test_successful_renewal_reschedules_before_listener_failure(self):
+        config = SimpleNamespace(tls_cert="cert", tls_key="key", arguments=Mock(return_value=[]))
+        certificates = Mock()
+        child = Mock()
+        child.poll.side_effect = [None, 9]
+        with (
+            patch("roomba_cloud.acme_dns.fingerprint", return_value=b"same"),
+            patch("roomba_cloud.acme_dns.time.monotonic", side_effect=[0, 50000, 50000]),
+            patch("roomba_cloud.acme_dns.time.sleep"),
+            patch("roomba_cloud.acme_dns.subprocess.Popen", return_value=child),
+            contextlib.redirect_stdout(io.StringIO()),
+            self.assertRaisesRegex(RuntimeError, "status 9"),
+        ):
+            acme_dns.serve(config, "https", certificates)
+        self.assertEqual(certificates.issue.call_count, 2)
+        child.terminate.assert_called_once()
+        child.wait.assert_called_once_with(timeout=10)
+
+    def test_hook_redirects_logs_and_top_level_errors_are_reported(self):
+        with (
+            patch("sys.argv", ["acme_dns.py", "hook"]),
+            patch.dict(os.environ, {"ROOMBA_ACME_LOG_PID": "123"}),
+            patch("roomba_cloud.acme_dns.os.open", return_value=17) as open_log,
+            patch("roomba_cloud.acme_dns.os.dup2") as dup,
+            patch("roomba_cloud.acme_dns.os.close") as close,
+            patch("roomba_cloud.acme_dns.challenge") as challenge,
+        ):
+            acme_dns.main()
+        open_log.assert_called_once_with("/proc/123/fd/1", os.O_WRONLY | os.O_APPEND)
+        dup.assert_called_once_with(17, 1)
+        close.assert_called_once_with(17)
+        challenge.assert_called_once_with(cleanup=False)
+
+        import runpy
+
+        output = io.StringIO()
+        with (
+            patch("sys.argv", [str(Path(acme_dns.__file__)), "hook"]),
+            patch.dict(os.environ, {}, clear=True),
+            contextlib.redirect_stdout(output),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            runpy.run_path(acme_dns.__file__, run_name="__main__")
+        self.assertEqual(raised.exception.code, 1)
+        self.assertIn("acme_hook_failed", output.getvalue())

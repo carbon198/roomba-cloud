@@ -250,6 +250,51 @@ class ShadowTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "not reported or supported"):
                         setting_patch(self.path, robot_id, "pad_wash_allowed", 1)
 
+    def test_cleaning_modes_and_settings_fail_closed_on_invalid_reports(self):
+        from roomba_cloud.robot_settings import cleaning_modes, configuration, setting_patch
+
+        robot_id = "e" * 32
+        prefix = f"$aws/things/{robot_id}/shadow"
+        self.assertEqual(cleaning_modes(self.path, robot_id), [])
+        for capability, expected in (
+            (None, []),
+            (True, []),
+            (0, []),
+            (2, [2]),
+            (4, [4]),
+            (6, [2, 4, 6]),
+            (38, [2, 4, 6]),
+        ):
+            cap = {} if capability is None else {"oMode": capability}
+            self.service.respond(
+                prefix + "/update",
+                json.dumps({"state": {"reported": {"cap": cap}}}).encode(),
+                robot_id,
+            )
+            self.assertEqual(cleaning_modes(self.path, robot_id), expected)
+
+        self.service.respond(
+            prefix + "/name/rw-settings/update",
+            b'{"state":{"reported":{"childLock":true,"twoPass":true,"suctionLevel":99}}}',
+            robot_id,
+        )
+        for multi_pass, two_pass_supported in ((0, False), (1, True), (3, False)):
+            self.service.respond(
+                prefix + "/update",
+                json.dumps({"state": {"reported": {"cap": {"multiPass": multi_pass}}}}).encode(),
+                robot_id,
+            )
+            values = {item["key"]: item["value"] for item in configuration(self.path, robot_id)}
+            self.assertEqual("two_pass" in values, two_pass_supported)
+            self.assertNotIn("suction_level", values)
+
+        with self.assertRaisesRegex(ValueError, "Unsupported configuration setting"):
+            setting_patch(self.path, robot_id, "unknown", True)
+        with self.assertRaisesRegex(ValueError, "Unsupported configuration setting"):
+            setting_patch(self.path, robot_id, 4, True)
+        with self.assertRaisesRegex(ValueError, "Invalid setting value type"):
+            setting_patch(self.path, robot_id, "child_lock", 1)
+
     def test_desired_deletions_and_rejection_of_desired_values_are_atomic(self):
         for desired in (None, {}, {"childLock": None}, {"nested": {"field": None}}):
             with self.subTest(desired=desired):
@@ -282,6 +327,34 @@ class ShadowTests(unittest.TestCase):
         link.symlink_to(self.path)
         with self.assertRaises(ValueError):
             ShadowService(link)
+
+    def test_shadow_storage_and_nested_route_failure_paths(self):
+        public_dir = Path(self.directory.name) / "public-dir"
+        public_dir.mkdir(mode=0o755)
+        public_dir.chmod(0o755)
+        with self.assertRaisesRegex(ValueError, "parent must be private"):
+            ShadowService(public_dir / "state.db")
+
+        with (
+            patch("roomba_cloud.robot_settings.setting_patch", return_value={"childLock": True}),
+            self.assertRaisesRegex(ValueError, "settings shadow is unavailable"),
+        ):
+            self.service.setting_delta("unregistered", "child_lock", True)
+
+        self.service.notify = Mock()
+        self.service.end_session("unknown-session")
+        self.service.notify.assert_not_called()
+        self.assertIsNone(self.service.respond(self.base + "get/extra", b"{}", "test"))
+        self.assertIsNone(self.service.respond(self.base + "delete", b"{}", "test"))
+
+        with patch("roomba_cloud.shadow_service.clears_desired", side_effect=RecursionError):
+            _, rejected = self.request(
+                "update", {"state": {"reported": {}, "desired": {"nested": {}}}}
+            )
+        self.assertEqual(rejected["message"], "State nesting exceeds diagnostic limit")
+        with patch("roomba_cloud.shadow_service.merge_reported", side_effect=RecursionError):
+            _, rejected = self.request("update", {"state": {"reported": {}}})
+        self.assertEqual(rejected["message"], "State nesting exceeds diagnostic limit")
 
     def test_request_document_and_count_limits(self):
         self.assertEqual(

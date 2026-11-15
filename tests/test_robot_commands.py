@@ -2,10 +2,11 @@ import contextlib
 import io
 import json
 from pathlib import Path
+import socket
 import tempfile
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, Mock, patch
 
 from roomba_cloud.mqtt_server import observation_packet, PacketReader
 from roomba_cloud.robot_commands import (
@@ -37,6 +38,215 @@ class FakeRobot:
 
 
 class CommandTests(unittest.TestCase):
+    def test_command_session_validation_acknowledgement_and_socket_proxy(self):
+        conn = Mock()
+        conn.fileno.return_value = 10
+        session = CommandSession(conn, 4, "a" * 32)
+        self.assertEqual(session.fileno(), 10)
+        session.acknowledge(1, 0)
+        self.assertFalse(session.ack.is_set())
+        session.pending = 1
+        session.acknowledge(1, 0)
+        self.assertTrue(session.ack.is_set())
+
+        for args in (
+            ("reset", None, None),
+            ("start", {}, None),
+            ("start", None, 3),
+            ("pause", None, 2),
+        ):
+            with self.subTest(args=args), self.assertRaises(CommandError):
+                session.execute(args[0], args[1], args[2])
+
+        session.pending = None
+        session.subscriptions.add(session.topic)
+        with (
+            patch.object(
+                session.ack,
+                "wait",
+                side_effect=lambda _: (session.close() or True),
+            ),
+            self.assertRaisesRegex(CommandError, "Robot disconnected"),
+        ):
+            session.locate()
+        with self.assertRaisesRegex(CommandError, "only valid for start"):
+            session.execute("pause", room_target={})
+
+    def test_registry_replacement_and_reported_setting_command(self):
+        robot_id = "f" * 32
+        previous = Mock()
+        current = Mock()
+        registry = CommandRegistry()
+        registry.register(robot_id, previous)
+        registry.register(robot_id, current)
+        previous.close.assert_called_once()
+        registry.remove(robot_id, previous)
+        self.assertIs(registry.sessions[robot_id], current)
+
+        from roomba_cloud.shadow_service import ShadowService
+
+        with tempfile.TemporaryDirectory() as directory:
+            service = ShadowService(Path(directory) / "shadow.db")
+            service.respond(
+                f"$aws/things/{robot_id}/shadow/name/rw-settings/update",
+                b'{"state":{"reported":{"childLock":true}}}',
+                robot_id,
+            )
+            service.respond(
+                f"$aws/things/{robot_id}/shadow/update",
+                b'{"state":{"reported":{"cap":{"oMode":2}}}}',
+                robot_id,
+            )
+            robot = FakeRobot()
+            session = CommandSession(robot, 5, robot_id)
+            robot.session = session
+            session.subscriptions.add(session.settings_topic)
+            session.subscriptions.add(session.topic)
+            settings_registry = CommandRegistry(service.path)
+            settings_registry.register(robot_id, session)
+            result = settings_registry.execute(
+                {
+                    "robot_id": robot_id,
+                    "command": "set_setting",
+                    "key": "child_lock",
+                    "value": False,
+                }
+            )
+            self.assertEqual(result, {"delivery": "acknowledged", "execution": "unconfirmed"})
+            self.assertEqual(robot.payloads[0][0], session.settings_topic)
+            settings_registry.execute(
+                {"robot_id": robot_id, "command": "start", "operating_mode": 2}
+            )
+            self.assertEqual(robot.payloads[1][1]["params"], {"operatingMode": 2})
+
+    def test_request_command_sends_valid_mode_and_setting_fields(self):
+        for command, options, expected in (
+            ("start", {"operating_mode": 2}, {"operating_mode": 2}),
+            (
+                "set_setting",
+                {"setting": {"key": "child_lock", "value": True}},
+                {"key": "child_lock", "value": True},
+            ),
+        ):
+            conn = MagicMock()
+            conn.makefile.return_value = io.BytesIO(
+                b'{"delivery":"acknowledged","execution":"unconfirmed"}\n'
+            )
+            with patch("roomba_cloud.robot_commands.socket.socket") as socket_factory:
+                socket_factory.return_value.__enter__.return_value = conn
+                request_command("unused.sock", "a" * 32, command, **options)
+            request = json.loads(conn.sendall.call_args.args[0])
+            self.assertEqual({key: request[key] for key in expected}, expected)
+
+    def test_command_server_rejects_unsafe_socket_paths_and_preserves_replacements(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            root.chmod(0o755)
+            with self.assertRaisesRegex(ValueError, "directory must be private"):
+                CommandServer(root / "commands.sock", CommandRegistry())
+            root.chmod(0o700)
+
+            path = root / "unsafe.sock"
+            active = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            active.bind(str(path))
+            path.chmod(0o644)
+            active.close()
+            with self.assertRaisesRegex(ValueError, "private owned socket"):
+                CommandServer(path, CommandRegistry())
+            path.unlink()
+
+            path = root / "replacement.sock"
+            server = CommandServer(path, CommandRegistry())
+            replacement = root / "replacement"
+            replacement.write_text("replacement")
+            path.unlink()
+            path.symlink_to(replacement)
+            server.server_close()
+            self.assertTrue(path.is_symlink())
+
+    def test_command_server_propagates_unexpected_stale_socket_errors(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stale.sock"
+            stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            stale.bind(str(path))
+            path.chmod(0o600)
+            stale.close()
+            probe = MagicMock()
+            probe.__enter__.return_value = probe
+            probe.connect.side_effect = PermissionError("not a refused socket")
+            with (
+                patch("roomba_cloud.robot_commands.socket.socket", return_value=probe),
+                self.assertRaises(PermissionError),
+            ):
+                CommandServer(path, CommandRegistry())
+
+    def test_request_command_rejects_invalid_optional_parameters_and_framing(self):
+        for command, options in (
+            ("unknown", {}),
+            ("find", {"edit": {}}),
+            ("find", {"duration": 1}),
+            ("find", {"operating_mode": 2}),
+            ("find", {"setting": {"key": "x", "value": 1}}),
+            ("find", {"segment_ids": ["one"]}),
+            ("live_map", {"duration": True}),
+            ("set_setting", {"setting": []}),
+            ("start", {"operating_mode": True}),
+        ):
+            with self.subTest(command=command, options=options):
+                with self.assertRaises(CommandError):
+                    request_command("unused.sock", "a" * 32, command, **options)
+
+        for raw in (b'{"delivery":"acknowledged"}', b"x" * 1025 + b"\n"):
+            conn = MagicMock()
+            conn.makefile.return_value = io.BytesIO(raw)
+            with (
+                patch("roomba_cloud.robot_commands.socket.socket") as socket_factory,
+                self.assertRaisesRegex(CommandError, "Invalid command service response"),
+            ):
+                socket_factory.return_value.__enter__.return_value = conn
+                request_command("unused.sock", "a" * 32)
+
+    def test_registry_rejects_disabled_settings_edits_rooms_and_mapping(self):
+        robot_id = "a" * 32
+        session = CommandSession(Mock(), 5, robot_id)
+        session.subscriptions.add(session.topic)
+        registry = CommandRegistry()
+        registry.register(robot_id, session)
+        requests = (
+            {"robot_id": robot_id, "command": "set_setting", "key": "child_lock", "value": True},
+            {"robot_id": robot_id, "command": "room_edit", "edit": {}},
+            {"robot_id": robot_id, "command": "clean_segments", "segment_ids": []},
+            {"robot_id": robot_id, "command": "train"},
+        )
+        for request in requests:
+            with self.subTest(command=request["command"]), self.assertRaises(CommandError):
+                registry.execute(request)
+
+    def test_command_server_returns_errors_for_invalid_framing_and_json(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with CommandServer(Path(directory) / "commands.sock", CommandRegistry()) as server:
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                try:
+                    for payload, expected in (
+                        (b"x" * 65537 + b"\n", "Invalid command framing"),
+                        (b"not-json\n", "Command transport failed"),
+                    ):
+                        with (
+                            self.subTest(expected=expected),
+                            socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn,
+                        ):
+                            conn.settimeout(2)
+                            conn.connect(str(server.path))
+                            conn.sendall(payload)
+                            with conn.makefile("rb") as response:
+                                self.assertEqual(
+                                    json.loads(response.readline()), {"error": expected}
+                                )
+                finally:
+                    server.shutdown()
+                    thread.join()
+
     def test_mapping_run_requires_no_mission_and_live_subscription(self):
         from roomba_cloud.shadow_service import ShadowService
 

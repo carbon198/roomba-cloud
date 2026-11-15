@@ -144,10 +144,13 @@ class InventoryTests(unittest.TestCase):
                 )
             with contextlib.closing(sqlite3.connect(path)) as db, db:
                 db.execute("DROP TABLE robot_connections")
+                db.execute("INSERT INTO robot_data VALUES (?,?)", (A, 100))
+                db.execute("INSERT INTO shadows VALUES (?,?)", ("invalid/topic", "{}"))
             item = inventory(path)["robots"][0]
             self.assertEqual(item["sku"], "505")
             self.assertIsNone(item["ip"])
             self.assertIsNone(item["first_seen"])
+            self.assertGreaterEqual(item["last_seen"], 100)
 
 
 class DashboardHTTPTests(unittest.TestCase):

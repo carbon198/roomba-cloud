@@ -37,13 +37,20 @@ disallow_untyped_calls = false
 # Subprocess/Node/container execution is tested separately, not measured here.
 branch = true
 source = ["roomba_cloud", "provisioning", "deployment"]
-# The thin package entry point is exercised by subprocess CLI tests.
-omit = ["roomba_cloud/__main__.py"]
+# The standalone BLE probe is excluded from this target.
+omit = [
+    "roomba_cloud/__main__.py",
+    "provisioning/ble_probe.py",
+]
 
 [tool.coverage.report]
 show_missing = true
 skip_covered = true
+# Match the run exclusions so existing coverage data reports the same scope.
+omit = [
+    "provisioning/ble_probe.py",
+]
 # Regression floor, not a production-readiness/load-handling guarantee.
 # CI also gates HTTP at 85% and mission guard/listener together at 95%.
-fail_under = 84
+fail_under = 95
 precision = 2

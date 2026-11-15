@@ -120,6 +120,37 @@ class MapPreviewTests(unittest.TestCase):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 decode_geometry(geometry(structure=invalid))
 
+    def test_geometry_rejects_invalid_wire_contour_and_structural_records(self):
+        base = zlib.decompress(geometry())
+        with self.assertRaisesRegex(ValueError, "Invalid map geometry message"):
+            decode_geometry(zlib.compress(base + field(3, 1)))
+        with self.assertRaisesRegex(ValueError, "Too many room contours"):
+            decode_geometry(geometry(contours=[(1, [(0, 0), (1, 0), (1, 1)]) for _ in range(101)]))
+        with self.assertRaisesRegex(ValueError, "Invalid contour room ID"):
+            decode_geometry(zlib.compress(base + field(14, field(1, b"invalid"))))
+
+        point = float_field(1, -0.9) + float_field(2, -1.85)
+        line = field(2, point) + field(3, point)
+        valid_room = field(1, 1) + field(2, line)
+        valid_structure = field(2, b"ignored") + field(1, valid_room)
+        self.assertEqual(
+            len(decode_geometry(geometry(structure=valid_structure)).structural_lines), 1
+        )
+
+        for structure, reason in (
+            (field(1, 1), "Invalid structural room geometry"),
+            (field(1, field(1, b"invalid")), "Invalid structural room ID"),
+            (field(1, field(1, 1) + field(2, 1)), "Invalid or oversized structural line list"),
+        ):
+            with self.subTest(reason=reason), self.assertRaisesRegex(ValueError, reason):
+                decode_geometry(geometry(structure=structure))
+        crowded_room = field(1, 1) + field(2, line) * 9
+        with (
+            patch("roomba_cloud.maps.preview.MAX_POINTS", 8),
+            self.assertRaisesRegex(ValueError, "Invalid or oversized structural line list"),
+        ):
+            decode_geometry(geometry(structure=field(1, crowded_room)))
+
     def test_room_fill_edges_interpolate_across_grid_cells_without_blurring_interior(self):
         from dataclasses import replace
 
@@ -194,6 +225,18 @@ class MapPreviewTests(unittest.TestCase):
         self.assertEqual(cleaned[29 * 30 + 8], 0)
         self.assertEqual(model.raster, bytes(raster))
         self.assertEqual(display_raster(replace(model, resolution=0.2)), cleaned)
+
+    def test_live_trail_bounds_and_last_known_status_are_rendered_safely(self):
+        from dataclasses import replace
+
+        model = decode_geometry(geometry())
+        unknown_room = replace(model, contours={"256": model.contours["1"]})
+        self.assertEqual(len(display_raster(unknown_room)), len(model.raster))
+        with self.assertRaisesRegex(ValueError, "Oversized position trail"):
+            render_png(model, trail=[(-0.9, -1.85, 5, False)] * 12001)
+        trail = [(-0.9, -1.85, 5, False), (1000, 1000, 5, False), (-0.8, -1.8, 5, False)]
+        image = render_png(model, trail=trail, position_status="last_known")
+        self.assertTrue(image.startswith(b"\x89PNG\r\n\x1a\n"))
 
     def test_antialiases_diagonal_edges_without_blurring_room_interiors(self):
         from dataclasses import replace
@@ -388,6 +431,43 @@ class MapPreviewTests(unittest.TestCase):
             os.chmod(output, 0o755)
             with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 main([str(archive_path), "--output-dir", str(output)])
+
+            os.chmod(output, 0o700)
+            no_maps = root / "no-maps.tar"
+            with tarfile.open(no_maps, "w") as archive:
+                raw = json.dumps({"schema_version": 1, "files": []}).encode()
+                info = tarfile.TarInfo("manifest.json")
+                info.size = len(raw)
+                archive.addfile(info, io.BytesIO(raw))
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                main([str(no_maps), "--output-dir", str(output)])
+
+            symlink = root / "archive-link.tar.gz"
+            symlink.symlink_to(archive_path)
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                main([str(symlink), "--output-dir", str(output)])
+
+            output_from_cli = root / "cli-previews"
+            output_from_cli.mkdir(mode=0o700)
+            import runpy
+
+            with (
+                patch(
+                    "sys.argv",
+                    [
+                        str(Path(__file__).resolve().parents[1] / "roomba_cloud/maps/preview.py"),
+                        str(archive_path),
+                        "--output-dir",
+                        str(output_from_cli),
+                    ],
+                ),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                runpy.run_path(
+                    str(Path(__file__).resolve().parents[1] / "roomba_cloud/maps/preview.py"),
+                    run_name="__main__",
+                )
+            self.assertEqual(len(list(output_from_cli.iterdir())), 4)
 
 
 if __name__ == "__main__":

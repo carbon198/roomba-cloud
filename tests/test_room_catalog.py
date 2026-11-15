@@ -321,6 +321,148 @@ class RoomCatalogTests(unittest.TestCase):
                         self.service.path, self.uploads.path, topic, request, self.robot_id
                     )
 
+    def test_map_details_rejects_invalid_size_and_schema_values(self):
+        topic = f"v011-irbthbu/things/{self.robot_id}/mapdetails/req"
+        invalid_requests = (
+            None,
+            b"x" * (64 * 1024 + 1),
+            b"[]",
+            b"\xff",
+            b"{",
+            b'{"request_id":1e999,"p2map_ids":["map-one"]}',
+            b'{"request_id":"bad\\u0001id","p2map_ids":["map-one"]}',
+            json.dumps({"request_id": "x" * 129, "p2map_ids": ["map-one"]}).encode(),
+            json.dumps(
+                {"request_id": 1, "p2map_ids": [f"map-{index}" for index in range(11)]}
+            ).encode(),
+            json.dumps({"request_id": 2**63, "p2map_ids": ["map-one"]}).encode(),
+            b'{"request_id":1,"p2map_ids":["invalid/map"]}',
+        )
+        for request in invalid_requests:
+            with self.subTest(request_size=len(request) if isinstance(request, bytes) else None):
+                with self.assertRaises(MapDetailsError):
+                    respond_map_details(
+                        self.service.path, self.uploads.path, topic, request, self.robot_id
+                    )
+
+    def test_map_details_requires_storage_and_complete_regions(self):
+        topic = f"v011-irbthbu/things/{self.robot_id}/mapdetails/req"
+        self.assertIsNone(
+            respond_map_details(self.service.path, None, "unrelated/topic", b"{}", self.robot_id)
+        )
+        with self.assertRaisesRegex(MapDetailsError, "map_storage_not_configured"):
+            respond_map_details(self.service.path, None, topic, b"{}", self.robot_id)
+
+        request = b'{"request_id":1,"p2map_ids":["map-one"]}'
+        mismatched = {
+            "map-one": {
+                "version": "1.0",
+                "archive_version": "old-version",
+                "rooms": {"1": "Room one"},
+            }
+        }
+        with patch(
+            "roomba_cloud.maps.map_details.map_catalog",
+            return_value=contextlib.nullcontext(mismatched),
+        ):
+            with self.assertRaisesRegex(MapDetailsError, "requested_maps_not_fully_available"):
+                respond_map_details(
+                    self.service.path, self.uploads.path, topic, request, self.robot_id
+                )
+
+        no_regions = {"map-one": {"version": "1.0", "archive_version": "1.0", "rooms": {}}}
+        with patch(
+            "roomba_cloud.maps.map_details.map_catalog",
+            return_value=contextlib.nullcontext(no_regions),
+        ):
+            with self.assertRaisesRegex(MapDetailsError, "requested_maps_have_no_regions"):
+                respond_map_details(
+                    self.service.path, self.uploads.path, topic, request, self.robot_id
+                )
+
+    def test_customer_map_images_handle_empty_stale_and_processing_failures(self):
+        from roomba_cloud.maps.catalog import saved_maps
+        from roomba_cloud.maps.customer_maps import (
+            MapImageError,
+            descriptors,
+            geometry as load_geometry,
+            image,
+            png,
+        )
+
+        self.mission_archive()
+        maps = saved_maps(self.service.path, self.uploads.path, self.robot_id)
+        self.assertEqual(descriptors({}), [])
+        item = maps["map-one"]
+        revision = item["archive"][3]
+        self.assertIsNone(
+            image(
+                self.service.path,
+                self.uploads.path,
+                self.robot_id,
+                "missing-map",
+                "1.0",
+                revision,
+                "room",
+            )
+        )
+        self.assertIsNone(
+            image(
+                self.service.path,
+                self.uploads.path,
+                self.robot_id,
+                "map-one",
+                "stale-version",
+                revision,
+                "room",
+            )
+        )
+        self.assertIsNone(
+            image(
+                self.service.path,
+                self.uploads.path,
+                self.robot_id,
+                "map-one",
+                "1.0",
+                "stale-revision",
+                "room",
+            )
+        )
+        with self.assertRaisesRegex(ValueError, "Unknown map image kind"):
+            image(
+                self.service.path,
+                self.uploads.path,
+                self.robot_id,
+                "map-one",
+                "1.0",
+                revision,
+                "preview",
+            )
+        with self.assertRaisesRegex(ValueError, "absent from its archive"):
+            load_geometry(*item["archive"], "missing-map", "1.0")
+        with patch(
+            "roomba_cloud.maps.customer_maps.archive_maps",
+            return_value=[("map-one", "1.0", zlib.compress(b""))],
+        ):
+            with self.assertRaisesRegex(MapImageError, "geometry_decode"):
+                load_geometry("corrupt", 1, 1, "digest", "map-one", "1.0")
+        with (
+            patch("roomba_cloud.maps.customer_maps.geometry", return_value=object()),
+            patch("roomba_cloud.maps.customer_maps.render_png", side_effect=ValueError("invalid")),
+            self.assertRaisesRegex(MapImageError, "png_render"),
+        ):
+            png(("render-failure", 1, 1, "digest"), "map-one", "1.0", "room")
+        live_image = image(
+            self.service.path,
+            self.uploads.path,
+            self.robot_id,
+            "map-one",
+            "1.0",
+            revision,
+            "live",
+        )
+        self.assertTrue(live_image.startswith(b"\x89PNG\r\n\x1a\n"))
+
     def test_empty_duplicate_unknown_and_cross_map_selection_never_sends(self):
         robot = FakeRobot()
         session = CommandSession(robot, 5, self.robot_id)
@@ -440,6 +582,155 @@ class RoomCatalogTests(unittest.TestCase):
             decode_rooms(binary_rooms([(1, "Room one")]))
         with self.assertRaises(ValueError):
             list(wire_fields(b"\x80" * 11))
+
+    def test_map_inventory_and_room_decoder_reject_invalid_bounds(self):
+        from roomba_cloud.maps.catalog import map_segments, reported_maps
+
+        prefix = f"$aws/things/{self.robot_id}/shadow/name/ro-currentstate"
+        for maps in (
+            [{"p2map_id": "map-one", "p2mapv_id": "1.0"}] * 11,
+            [{"p2map_id": "invalid/id", "p2mapv_id": "1.0"}],
+            [None],
+        ):
+            with self.subTest(maps=maps):
+                self.service.respond(
+                    prefix + "/update",
+                    json.dumps({"state": {"reported": {"p2maps": maps}}}).encode(),
+                    self.robot_id,
+                )
+                with self.assertRaises(ValueError):
+                    reported_maps(self.service.path, self.robot_id)
+        with self.assertRaisesRegex(ValueError, "Invalid room table"):
+            decode_rooms(zlib.compress(field(12, 1)))
+        with self.assertRaisesRegex(ValueError, "Truncated protobuf field"):
+            list(wire_fields(b"\x0a\x02x"))
+        with self.assertRaisesRegex(ValueError, "decoding limit"):
+            from roomba_cloud.maps.catalog import archive_maps
+
+            list(archive_maps("not-opened", 64 * 1024 * 1024 + 1, "digest"))
+        too_many_rooms = {
+            "map": {
+                "version": "1",
+                "rooms": {str(region): f"Room {region}" for region in range(101)},
+            }
+        }
+        with self.assertRaisesRegex(ValueError, "segment count"):
+            map_segments(too_many_rooms)
+
+    def test_archive_manifest_and_member_validation_limits(self):
+        from roomba_cloud.maps.catalog import archive_maps, catalog_maps
+
+        counter = 0
+
+        def make_archive(manifest=None, members=()):
+            nonlocal counter
+            counter += 1
+            path = Path(self.directory.name) / f"invalid-{counter}.tar"
+            files = list(members)
+            if manifest is not None:
+                files.insert(0, ("manifest.json", json.dumps(manifest).encode()))
+            with tarfile.open(path, "w") as archive:
+                for name, raw in files:
+                    info = tarfile.TarInfo(name)
+                    info.size = len(raw)
+                    archive.addfile(info, io.BytesIO(raw))
+            return path, path.stat().st_size, hashlib.sha256(path.read_bytes()).hexdigest()
+
+        def read_archive_for_test(manifest=None, members=(), smart_only=False):
+            path, size, digest = make_archive(manifest, members)
+            return list(archive_maps(path, size, digest, smart_only))
+
+        with self.assertRaisesRegex(ValueError, "Invalid map manifest"):
+            read_archive_for_test(members=[("other", b"")])
+        for manifest in (
+            {"schema_version": True, "files": []},
+            {"schema_version": 2, "files": []},
+            {"schema_version": 1, "files": {}},
+        ):
+            with (
+                self.subTest(manifest=manifest),
+                self.assertRaisesRegex(ValueError, "Unsupported map manifest"),
+            ):
+                read_archive_for_test(manifest)
+        with self.assertRaisesRegex(ValueError, "expanded size/member limit"):
+            read_archive_for_test(members=[(f"member-{index}", b"") for index in range(21)])
+        for entry in (
+            1,
+            {"type": "p2mapv", "p2mapv": None},
+            {
+                "type": "p2mapv",
+                "name": "map.bin",
+                "p2mapv": {"p2map_id": "map-one", "p2mapv_id": "1.0", "p2map_type": 3},
+            },
+            {
+                "type": "p2mapv",
+                "name": "map.bin",
+                "p2mapv": {"p2map_id": "invalid/id", "p2mapv_id": "1.0", "p2map_type": 3},
+            },
+        ):
+            with self.subTest(entry=entry), self.assertRaises(ValueError):
+                read_archive_for_test({"schema_version": 1, "files": [entry]})
+        with self.assertRaisesRegex(ValueError, "non-map data"):
+            read_archive_for_test(
+                {"schema_version": 1, "files": [{"type": "mission"}]},
+                smart_only=True,
+            )
+        with self.assertRaisesRegex(ValueError, "unverified map type"):
+            read_archive_for_test(
+                {
+                    "schema_version": 1,
+                    "files": [
+                        {
+                            "type": "p2mapv",
+                            "name": "map.bin",
+                            "p2mapv": {
+                                "p2map_id": "map-one",
+                                "p2mapv_id": "1.0",
+                                "p2map_type": 21,
+                            },
+                        }
+                    ],
+                },
+                members=[("map.bin", binary_rooms([(1, "Room")]))],
+                smart_only=True,
+            )
+        with self.assertRaisesRegex(ValueError, "Invalid map binary member"):
+            read_archive_for_test(
+                {
+                    "schema_version": 1,
+                    "files": [
+                        {
+                            "type": "p2mapv",
+                            "name": "missing.bin",
+                            "p2mapv": {
+                                "p2map_id": "map-one",
+                                "p2mapv_id": "1.0",
+                                "p2map_type": 3,
+                            },
+                        }
+                    ],
+                }
+            )
+        with self.assertRaisesRegex(ValueError, "Invalid stored upload token"):
+            catalog_maps([("bad-token", 0, "digest", "uploadP2MapSmart")], self.uploads.path, {})
+
+        archive_path = Path(self.directory.name) / ("b" * 64 + ".tar.gz")
+        archive_size = archive_path.stat().st_size
+        archive_digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+        with self.assertRaisesRegex(ValueError, "Invalid stored map archive"):
+            catalog_maps(
+                [("b" * 64, archive_size + 1, archive_digest, "uploadP2MapSmart")],
+                self.uploads.path,
+                {"map-one": "1.0"},
+            )
+        symlink = Path(self.directory.name) / ("c" * 64 + ".tar.gz")
+        symlink.symlink_to(archive_path)
+        with self.assertRaisesRegex(ValueError, "Invalid stored map archive"):
+            catalog_maps(
+                [("c" * 64, archive_size, archive_digest, "uploadP2MapSmart")],
+                self.uploads.path,
+                {"map-one": "1.0"},
+            )
 
 
 if __name__ == "__main__":
