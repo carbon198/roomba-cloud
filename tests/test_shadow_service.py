@@ -100,6 +100,10 @@ class ShadowTests(unittest.TestCase):
         }
         for topic, reported in (
             (f"$aws/things/{robot_id}/shadow/update", {"cap": {"autoevac": 3, "multiPass": 1}}),
+            (
+                f"$aws/things/{robot_id}/shadow/name/ro-currentstate/update",
+                {"dock": {"cap": {"pd": 2, "pw": 3}}},
+            ),
             (base + "update", initial),
         ):
             self.service.respond(
@@ -128,6 +132,123 @@ class ShadowTests(unittest.TestCase):
                 stored = self.service.respond(base + "get", b"{}", robot_id)[1]
                 self.assertNotIn("desired", stored["state"])
                 self.assertNotIn("desired", stored["metadata"])
+
+    def test_pad_wash_heat_requires_a_heating_dock_and_limits_choices(self):
+        from roomba_cloud.robot_settings import configuration, setting_patch
+
+        robot_id = "b" * 32
+        prefix = f"$aws/things/{robot_id}/shadow"
+        self.service.respond(
+            prefix + "/name/rw-settings/update",
+            b'{"state":{"reported":{"pwHeat":1}}}',
+            robot_id,
+        )
+
+        for capability, expected in (
+            (None, None),
+            (0, None),
+            (1, None),
+            (2, {"0": "No heat", "1": "Default heat"}),
+            (3, {"0": "No heat", "1": "Default heat", "2": "High heat"}),
+            (4, {"0": "No heat", "1": "Default heat", "2": "High heat"}),
+        ):
+            with self.subTest(capability=capability):
+                reported = {"dock": {"cap": {}}}
+                if capability is not None:
+                    reported["dock"]["cap"]["pw"] = capability
+                self.service.respond(
+                    prefix + "/name/ro-currentstate/update",
+                    json.dumps({"state": {"reported": reported}}).encode(),
+                    robot_id,
+                )
+                setting = next(
+                    (
+                        item
+                        for item in configuration(self.path, robot_id)
+                        if item["key"] == "pad_wash_heat"
+                    ),
+                    None,
+                )
+                if expected is None:
+                    self.assertIsNone(setting)
+                else:
+                    self.assertIsNotNone(setting)
+                    self.assertEqual(setting["options"], expected)
+                    self.assertEqual(
+                        setting_patch(self.path, robot_id, "pad_wash_heat", 1), {"pwHeat": 1}
+                    )
+                    if "2" not in expected:
+                        with self.assertRaisesRegex(ValueError, "Unsupported setting value"):
+                            setting_patch(self.path, robot_id, "pad_wash_heat", 2)
+
+    def test_pad_dry_and_wash_settings_require_explicit_supported_capabilities(self):
+        from roomba_cloud.robot_settings import configuration, setting_patch
+
+        robot_id = "d" * 32
+        prefix = f"$aws/things/{robot_id}/shadow"
+        settings = {
+            "padDryAllowed": 1,
+            "padDryDur": 2,
+            "padWashAllowed": 1,
+            "pwHeat": 1,
+            "pwReturn": 0,
+            "pwAreaInterval": 6,
+            "pwTimeInterval": 10,
+        }
+        self.service.respond(
+            prefix + "/name/rw-settings/update",
+            json.dumps({"state": {"reported": settings}}).encode(),
+            robot_id,
+        )
+
+        wash_settings = {
+            "pad_wash_allowed",
+            "pad_wash_frequency",
+            "pad_wash_area_interval",
+            "pad_wash_time_interval",
+        }
+        for dry_cap, wash_cap, expect_dry, expect_wash, expect_heat in (
+            (None, None, False, False, False),
+            (0, 0, False, False, False),
+            (2, None, True, False, False),
+            (None, 1, False, True, False),
+            (3, 2, True, True, True),
+            (4, 5, False, False, False),
+        ):
+            with self.subTest(dry_cap=dry_cap, wash_cap=wash_cap):
+                self.service.respond(
+                    prefix + "/name/ro-currentstate/update",
+                    json.dumps(
+                        {
+                            "state": {
+                                "reported": {
+                                    "dock": {
+                                        "cap": {"pd": dry_cap, "pw": wash_cap},
+                                    }
+                                }
+                            }
+                        }
+                    ).encode(),
+                    robot_id,
+                )
+                keys = {item["key"] for item in configuration(self.path, robot_id)}
+                dry_keys = {key for key in keys if key.startswith("pad_dry")}
+                actual_wash_keys = {key for key in keys if key.startswith("pad_wash")}
+                self.assertEqual(
+                    dry_keys,
+                    {"pad_dry_allowed", "pad_dry_duration"} if expect_dry else set(),
+                )
+                expected_wash = wash_settings | ({"pad_wash_heat"} if expect_heat else set())
+                self.assertEqual(
+                    actual_wash_keys,
+                    expected_wash if expect_wash else set(),
+                )
+                if not expect_dry:
+                    with self.assertRaisesRegex(ValueError, "not reported or supported"):
+                        setting_patch(self.path, robot_id, "pad_dry_allowed", 1)
+                if not expect_wash:
+                    with self.assertRaisesRegex(ValueError, "not reported or supported"):
+                        setting_patch(self.path, robot_id, "pad_wash_allowed", 1)
 
     def test_desired_deletions_and_rejection_of_desired_values_are_atomic(self):
         for desired in (None, {}, {"childLock": None}, {"nested": {"field": None}}):

@@ -3,7 +3,8 @@
 Do not invent unsupported switches/options from model names. Expose only known
 wire fields with exact expected types; bool is deliberately not interchangeable
 with int. Robot/dock capability reports suppress unsupported features and narrow
-auto-evacuation choices. Unknown settings or unreported values are not writable.
+auto-evacuation choices. Missing or unknown pad-dock capabilities fail closed.
+Unknown settings or unreported values are not writable.
 The returned values are robot reports, not optimistic desired state; settings
 deltas are one-shot and MQTT acknowledgement does not establish adoption.
 """
@@ -12,6 +13,9 @@ import contextlib
 import json
 from pathlib import Path
 import sqlite3
+
+PAD_DRY_CAPABILITIES = frozenset({1, 2, 3})
+PAD_WASH_CAPABILITIES = frozenset({1, 2, 3, 4})
 
 
 SETTINGS = {
@@ -26,6 +30,13 @@ SETTINGS = {
         "switch",
         int,
         {0: "Off", 1: "On"},
+    ),
+    "pad_wash_heat": (
+        "pwHeat",
+        "Mop wash heat",
+        "select",
+        int,
+        {0: "No heat", 1: "Default heat", 2: "High heat"},
     ),
     "auto_evac_frequency": (
         "autoevacFreq",
@@ -124,10 +135,23 @@ def configuration(path, robot_id):
         value = reported.get(wire)
         if type(value) is not expected:
             continue
-        if key.startswith("pad_dry") and dock.get("pd") == 0:
+        if key.startswith("pad_dry") and (
+            type(dock.get("pd")) is not int or dock["pd"] not in PAD_DRY_CAPABILITIES
+        ):
             continue
-        if key.startswith("pad_wash") and dock.get("pw") == 0:
+        if key.startswith("pad_wash") and (
+            type(dock.get("pw")) is not int or dock["pw"] not in PAD_WASH_CAPABILITIES
+        ):
             continue
+        if key == "pad_wash_heat":
+            allowed = {
+                2: (0, 1),
+                3: (0, 1, 2),
+                4: (0, 1, 2),
+            }.get(dock.get("pw"), ())
+            options = {number: label for number, label in options.items() if number in allowed}
+            if not options:
+                continue
         if key == "two_pass" and cap.get("multiPass") in (0, 3):
             continue
         if key == "auto_evac_frequency":
