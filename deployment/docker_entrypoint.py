@@ -28,7 +28,7 @@ def arguments(command, environment):
         "BIND": "0.0.0.0",
         "HTTPS_PORT": "8443",
         "MQTT_PORT": "8883",
-        "DISCOVERY_TTL": "1800",
+        "DISCOVERY_TTL": "86400",
     }
     for name in (
         "HOSTNAME",

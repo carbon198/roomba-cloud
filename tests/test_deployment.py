@@ -141,7 +141,7 @@ class ConfigurationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             config = Configuration(self.config(directory))
             config.prepare_state()
-            self.assertEqual(config.discovery_ttl, 1800)
+            self.assertEqual(config.discovery_ttl, 86400)
             self.assertEqual(config.data_dir.stat().st_mode & 0o777, 0o700)
             self.assertEqual((config.data_dir / "shadows.sqlite3").stat().st_mode & 0o777, 0o600)
             mqtt = config.arguments("mqtt")
@@ -157,7 +157,7 @@ class ConfigurationTests(unittest.TestCase):
                 self.assertNotIn("--robot-ip", args)
             document = json.loads((config.data_dir / "discovery.json").read_text())
             self.assertEqual(document["mqtt"], "roomba.example.com")
-            self.assertEqual(document["discoveryTTL"], 1800)
+            self.assertEqual(document["discoveryTTL"], 86400)
             self.assertEqual(document["httpBase"], "https://roomba.example.com")
             self.assertEqual(document["vStream"], "https://roomba.example.com")
 
@@ -168,6 +168,11 @@ class ConfigurationTests(unittest.TestCase):
             for ttl in (0, 1799, 2**31):
                 with self.subTest(ttl=ttl), self.assertRaisesRegex(ValueError, "discovery_ttl"):
                     Configuration(self.config(directory, discovery_ttl=ttl))
+
+    def test_discovery_ttl_is_omitted_from_sample_environment(self):
+        root = Path(__file__).resolve().parents[1]
+        sample_environment = (root / ".env.example").read_text()
+        self.assertNotIn("DISCOVERY_TTL", sample_environment)
 
     def test_invalid_configuration_fails_instead_of_using_defaults(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -291,7 +296,7 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(args.service, "both")
         self.assertEqual(config.data_dir, Path("/data"))
         self.assertEqual(config.customer_token_file, Path("/data/customer-token.txt"))
-        self.assertEqual(config.discovery_ttl, 1800)
+        self.assertEqual(config.discovery_ttl, 86400)
         for name in ("ACME_AGREE_TOS", "ACME_STAGING"):
             with self.subTest(name=name), self.assertRaisesRegex(ValueError, "true or false"):
                 container_arguments([], {name: "yes"})

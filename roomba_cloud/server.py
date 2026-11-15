@@ -42,6 +42,7 @@ import time
 
 HEALTHCHECK_CLIENT_ID = "roomba-cloud-healthcheck"
 MIN_DISCOVERY_TTL = 1800
+DEFAULT_DISCOVERY_TTL = 86400
 MAX_DISCOVERY_TTL = 2**31 - 1
 
 
@@ -297,9 +298,10 @@ def parse_arguments(argv=None):
     parser.add_argument(
         "--discovery-ttl",
         type=int,
-        default=MIN_DISCOVERY_TTL,
+        default=DEFAULT_DISCOVERY_TTL,
         help=(
-            f"service discovery refresh interval in seconds (default/minimum {MIN_DISCOVERY_TTL})"
+            "advanced service discovery refresh interval in seconds "
+            f"(default {DEFAULT_DISCOVERY_TTL}, minimum {MIN_DISCOVERY_TTL})"
         ),
     )
     parser.add_argument("--bind", default="0.0.0.0", help="listener address (default: 0.0.0.0)")
