@@ -252,7 +252,7 @@ def discovery(robot_id, base):
         "identifiers": ["roomba_local_" + robot_id],
         "name": "Roomba local",
         "manufacturer": "iRobot",
-        "model": "505 (local cloud telemetry)",
+        "model": "Roomba (local cloud telemetry)",
     }
     for key, (_, _, expected, label) in FIELDS.items():
         component = "binary_sensor" if expected is bool else "sensor"

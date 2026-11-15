@@ -378,6 +378,7 @@ class HAPublisherTests(unittest.TestCase):
             self.assertNotIn("private", json.dumps(data))
             documents = [d for _, d in ha.discovery(robot_id, "test")]
             self.assertEqual(documents[0]["device"]["name"], "Roomba local")
+            self.assertEqual(documents[0]["device"]["model"], "Roomba (local cloud telemetry)")
             self.assertEqual(
                 next(d for d in documents if d["name"] == "Mission cleaned area")[
                     "unit_of_measurement"
