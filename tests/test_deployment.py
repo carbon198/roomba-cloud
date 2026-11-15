@@ -12,6 +12,7 @@ import http.client
 import io
 import json
 import os
+import runpy
 import shlex
 import signal
 from pathlib import Path
@@ -36,6 +37,7 @@ from roomba_cloud.server import (
     create_customer_token,
     healthcheck,
     HEALTHCHECK_CLIENT_ID,
+    cli,
     main,
     parse_arguments,
     serve_both,
@@ -194,6 +196,92 @@ class ConfigurationTests(unittest.TestCase):
             state.chmod(0o755)
             with self.assertRaisesRegex(ValueError, "private"):
                 Configuration(self.config(directory)).prepare_state()
+
+    def test_configuration_rejects_invalid_hostname_bind_and_boolean_port(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = self.config(directory)
+            args.hostname = "\ud800"
+            with self.assertRaisesRegex(ValueError, "valid DNS hostname"):
+                Configuration(args)
+
+            args = self.config(directory)
+            args.hostname = 42
+            with self.assertRaisesRegex(ValueError, "hostname must be a DNS hostname"):
+                Configuration(args)
+
+            args = self.config(directory)
+            args.bind = None
+            with self.assertRaisesRegex(ValueError, "bind must be a string"):
+                Configuration(args)
+
+            args = self.config(directory)
+            args.mqtt_port = True
+            with self.assertRaisesRegex(ValueError, "Listener ports"):
+                Configuration(args)
+
+    def test_combined_services_clean_up_missing_process_groups_and_sleep(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = parse_arguments(["both", *self.flags(directory)])
+            child = Mock()
+            child.pid = 100
+            child.poll.return_value = None
+            child.wait.side_effect = [subprocess.TimeoutExpired("https", 15), 0]
+            with (
+                patch("roomba_cloud.server.subprocess.Popen", side_effect=[child, OSError("start")]),
+                patch(
+                    "roomba_cloud.server.os.killpg",
+                    side_effect=[ProcessLookupError(), ProcessLookupError()],
+                ) as kill_group,
+                self.assertRaisesRegex(OSError, "start"),
+            ):
+                serve_both(args)
+            self.assertEqual(kill_group.call_count, 2)
+            self.assertEqual(child.wait.call_count, 2)
+
+            children = [Mock(pid=101), Mock(pid=102)]
+            for process in children:
+                process.poll.return_value = None
+            with (
+                patch("roomba_cloud.server.subprocess.Popen", side_effect=children),
+                patch("roomba_cloud.server.os.killpg"),
+                patch("roomba_cloud.server.time.sleep", side_effect=KeyboardInterrupt),
+                self.assertRaises(KeyboardInterrupt),
+            ):
+                serve_both(args)
+
+    def test_cli_reports_errors_and_swallows_keyboard_interrupt(self):
+        with patch("roomba_cloud.server.main", side_effect=KeyboardInterrupt):
+            cli()
+        stderr = io.StringIO()
+        with (
+            patch("roomba_cloud.server.main", side_effect=ValueError("bad configuration")),
+            contextlib.redirect_stderr(stderr),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            cli()
+        self.assertEqual(raised.exception.code, 1)
+        self.assertEqual(stderr.getvalue(), "Deployment failed: bad configuration\n")
+
+    def test_module_entrypoint_dispatches_help_without_starting_services(self):
+        entrypoint = Path(__file__).resolve().parents[1] / "roomba_cloud/server.py"
+        with (
+            patch("sys.argv", [str(entrypoint), "--help"]),
+            contextlib.redirect_stdout(io.StringIO()) as output,
+            self.assertRaises(SystemExit) as raised,
+        ):
+            runpy.run_path(str(entrypoint), run_name="__main__")
+        self.assertEqual(raised.exception.code, 0)
+        self.assertIn("healthcheck", output.getvalue())
+
+    def test_main_both_service_delegates_after_persistent_initialization(self):
+        with tempfile.TemporaryDirectory() as directory:
+            flags = self.flags(directory)
+            with (
+                patch("sys.argv", ["server.py", "both", *flags]),
+                patch("roomba_cloud.server.serve_both") as serve,
+            ):
+                main()
+            serve.assert_called_once()
 
     def test_removed_json_and_legacy_overrides_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -387,6 +475,22 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(check.call_args.args[1], "mqtt")
             prepare.assert_not_called()
             self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_docker_entrypoint_reports_invalid_environment_configuration(self):
+        entrypoint = Path(__file__).resolve().parents[1] / "deployment/docker_entrypoint.py"
+        stderr = io.StringIO()
+        with (
+            patch.dict(os.environ, {"ACME_AGREE_TOS": "yes"}, clear=True),
+            patch("sys.argv", [str(entrypoint)]),
+            contextlib.redirect_stderr(stderr),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            runpy.run_path(str(entrypoint), run_name="__main__")
+        self.assertEqual(raised.exception.code, 1)
+        self.assertEqual(
+            stderr.getvalue(),
+            "Container configuration failed: ACME_AGREE_TOS must be true or false\n",
+        )
 
     def test_healthcheck_rejects_bad_protocol_responses(self):
         with tempfile.TemporaryDirectory() as directory:

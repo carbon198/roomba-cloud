@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import patch
 
 from roomba_cloud.customer_telemetry import snapshot
-from roomba_cloud.dock_reports import DockReportError, parse_report, store_report
+from roomba_cloud.dock_reports import DockReportError, _validate_value, parse_report, store_report
 from roomba_cloud.shadow_service import ShadowService
 
 
@@ -25,10 +25,10 @@ class DockReportTests(unittest.TestCase):
     def test_parse_report_preserves_unknown_and_nested_values(self):
         report = parse_report(
             b'{"reportType":"padDry","pdState":701,"bbk":{"totalPadDry":4},'
-            b'"cap":{"pd":2},"futureField":[true,null,"x"]}'
+            b'"cap":{"pd":2},"futureField":[true,null,"x",1.5]}'
         )
         self.assertEqual(report["bbk"]["totalPadDry"], 4)
-        self.assertEqual(report["futureField"], [True, None, "x"])
+        self.assertEqual(report["futureField"], [True, None, "x", 1.5])
 
     def test_parse_report_rejects_malformed_unbounded_or_ambiguous_json(self):
         for payload in (
@@ -41,6 +41,37 @@ class DockReportTests(unittest.TestCase):
             with self.subTest(payload_length=len(payload)):
                 with self.assertRaises(DockReportError):
                     parse_report(payload)
+
+    def test_parse_report_rejects_invalid_encodings_and_value_limits(self):
+        oversized_items = {"items": [[0] * 512 for _ in range(8)]}
+        invalid_payloads = (
+            b"",
+            None,
+            b"\xff",
+            b"{",
+            b'{"value":1e999}',
+            json.dumps({"x" * 129: 1}).encode(),
+            b'{"bad\\u0001key":1}',
+            json.dumps({"value": "x" * 4097}).encode(),
+            json.dumps({"value": [0] * 513}).encode(),
+            json.dumps({"value": {str(i): i for i in range(513)}}).encode(),
+            json.dumps({"value": oversized_items}).encode(),
+        )
+        for payload in invalid_payloads:
+            with self.subTest(payload_length=len(payload) if isinstance(payload, bytes) else None):
+                with self.assertRaises(DockReportError):
+                    parse_report(payload)
+
+    def test_report_value_validator_rejects_non_json_python_values(self):
+        with self.assertRaisesRegex(DockReportError, "invalid_report_value"):
+            _validate_value((1, 2))
+        nested = None
+        for _ in range(10):
+            nested = [nested]
+        with self.assertRaisesRegex(DockReportError, "report_nesting_exceeds_limit"):
+            _validate_value(nested)
+        with self.assertRaisesRegex(DockReportError, "non_finite_report_number"):
+            _validate_value(float("inf"))
 
     def test_store_latest_report_per_robot_and_expose_in_customer_telemetry(self):
         payload = b'{"reportType":"padDry","reportTime":1700000000,"pdState":701,'

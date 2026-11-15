@@ -21,7 +21,7 @@
 !roomba_cloud/telemetry_events.py
 !roomba_cloud/customer_telemetry.py
 !roomba_cloud/dock_reports.py
-!roomba_cloud/ha_mqtt_publish.py
+!roomba_cloud/telemetry_schema.py
 !roomba_cloud/discovery_response.json
 !roomba_cloud/maps/
 !roomba_cloud/maps/__init__.py

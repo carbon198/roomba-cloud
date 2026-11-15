@@ -1,6 +1,6 @@
 """Build the versioned customer/HA contract from allowlisted local reports.
 
-Never expose a raw shadow: fields/types come from ha_mqtt_publish plus the
+Never expose a raw shadow: fields/types come from telemetry_schema plus the
 explicit diagnostic additions here. Missing data is absent/unavailable rather
 than fabricated zero/false. online reflects MQTT leases; last_data_received
 tracks publications, with an old-database shadow-timestamp fallback.
@@ -34,11 +34,7 @@ import sqlite3
 from os import PathLike
 from typing import Any, NotRequired, TypedDict
 
-from roomba_cloud.ha_mqtt_publish import (
-    FIELDS,
-    discovery,
-    telemetry,
-)
+from roomba_cloud.telemetry_schema import FIELDS, field_descriptor, telemetry
 
 EXTRA_FIELDS = {
     "stats_mission_canceled_count": ("ro-stats", ("bbmssn", "nMssnC"), int, "Missions canceled"),
@@ -362,24 +358,11 @@ def snapshot(
                 default=None,
             )
     fields: list[TelemetryField] = []
-    for key, (_, descriptor) in zip(FIELDS, discovery(robot_id, ""), strict=True):
+    for key in FIELDS:
         if key in omitted_feature_fields:
             continue
-        fields.append(
-            {
-                "key": key,
-                "name": descriptor["name"],
-                "kind": "binary_sensor" if FIELDS[key][2] is bool else "sensor",
-            }
-        )
-        if "device_class" in descriptor:
-            fields[-1]["device_class"] = descriptor["device_class"]
-        if "unit_of_measurement" in descriptor:
-            fields[-1]["unit_of_measurement"] = descriptor["unit_of_measurement"]
-        if "state_class" in descriptor:
-            fields[-1]["state_class"] = descriptor["state_class"]
-        if "entity_category" in descriptor:
-            fields[-1]["entity_category"] = descriptor["entity_category"]
+        descriptor = field_descriptor(key)
+        fields.append({"key": key, **descriptor})
     for key, (_, _, _, name) in EXTRA_FIELDS.items():
         if key in omitted_feature_fields:
             continue

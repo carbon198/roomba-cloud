@@ -356,6 +356,11 @@ class ConnectTests(unittest.TestCase):
         self.assertEqual(response, b"\x40\x02\0\x03")
         self.assertEqual(probe.observation_packet(0xC0, b"", 5)[2], b"\xd0\0")
         self.assertTrue(probe.observation_packet(0xE0, b"", 5)[3])
+        _, fields, _, _ = probe.observation_packet(0x40, b"\0\x05\x80\0", 5)
+        self.assertEqual(fields, {"packet_id": 5, "reason_code": 0x80})
+        _, fields, _, done = probe.observation_packet(0xE0, b"\x80\0", 5)
+        self.assertEqual(fields, {"reason_code": 0x80})
+        self.assertTrue(done)
 
     def test_malformed_observation_packets(self):
         for header, body in (
@@ -365,6 +370,7 @@ class ConnectTests(unittest.TestCase):
             (0x82, b"\0\x01\0" + mqtt_string("state") + b"\xc0"),
             (0x34, mqtt_string("state")),
             (0x30, mqtt_string("state") + b"\x80"),
+            (0x30, mqtt_string("state/#") + b"\0"),
             (0xC0, b"x"),
             (0xE1, b""),
             (0x10, b"private-data"),
@@ -373,6 +379,39 @@ class ConnectTests(unittest.TestCase):
                 with self.assertRaises(ProtocolError) as caught:
                     probe.observation_packet(header, body, 5)
                 self.assertNotIn("private", str(caught.exception))
+
+    def test_subscription_topic_options_shared_filters_and_properties(self):
+        for topic, options, version, reason in (
+            ("state", b"\x04", 4, "MQTT 3 subscription options"),
+            ("$share//state", b"\0", 5, "Invalid shared subscription"),
+            ("$share/group/", b"\0", 5, "Invalid shared subscription"),
+            ("$share/a+/state", b"\0", 5, "Invalid MQTT topic filter"),
+            ("$share/group/state", b"\x04", 5, "No Local on shared subscription"),
+        ):
+            body = b"\0\x01" + (b"\0" if version == 5 else b"")
+            body += mqtt_string(topic) + options
+            with self.subTest(topic=topic, options=options, version=version):
+                with self.assertRaisesRegex(ProtocolError, reason):
+                    probe.observation_packet(0x82, body, version)
+
+        invalid_topics = (b"\0\x01\xff", b"\0\x01\x01")
+        for topic in invalid_topics:
+            with self.subTest(topic=topic), self.assertRaises(ProtocolError):
+                probe.observation_packet(0x82, b"\0\x01" + topic + b"\0", 5)
+        with self.assertRaisesRegex(ProtocolError, "Malformed MQTT properties"):
+            probe.observation_packet(0x82, b"\0\x01" + b"\x80" * 4, 5)
+
+    def test_connect_rejects_bad_protocol_properties_and_client_ids(self):
+        valid_header = mqtt_string("MQTT") + b"\x05\x02\0\x1e"
+        invalid_bodies = (
+            mqtt_string("MQTT") + b"\x06\x02\0\x1e",
+            valid_header + b"\x80\x80\x80\x80",
+            mqtt_string("MQTT") + b"\x04\x02\0\x1e\0\x01\xff",
+            mqtt_string("MQTT") + b"\x04\x02\0\x1e\0\x03a\0b",
+        )
+        for body in invalid_bodies:
+            with self.subTest(body=body), self.assertRaises(ProtocolError):
+                probe.connect_metadata(0x10, body)
 
     def test_observation_duration_limit(self):
         from unittest.mock import Mock
@@ -627,6 +666,127 @@ class DockReportDispatchTests(unittest.TestCase):
         logs = output.getvalue()
         self.assertIn("dock_report_stored", logs)
         self.assertNotIn("pdState", logs)
+
+
+class ObservationBranchTests(unittest.TestCase):
+    def setUp(self):
+        self.robot = "a" * 32
+        self.base = f"v011-irbthbu/things/{self.robot}"
+        self.metadata = {
+            "client_id": self.robot,
+            "protocol_version": 4,
+            "keepalive_seconds": 30,
+        }
+
+    def publish(self, topic, payload=b""):
+        return 0x30, mqtt_string(topic) + payload
+
+    def test_observer_records_sessions_capture_and_rejected_edit_results(self):
+        edit_topic = self.base + "/edit_resp"
+        command = Mock()
+        command.subscriptions = set()
+        command.edit_topic = self.base + "/edit_req"
+        command.map_refresh_in_progress = True
+        shadows = Mock()
+        shadows.path = "shadows.db"
+        shadows.respond.return_value = None
+        capture = Mock()
+        capture.record.return_value = True
+        maintenance = Mock()
+        frames = [
+            (0x82, b"\0\x01" + mqtt_string(edit_topic) + b"\0"),
+            self.publish(edit_topic, b"invalid edit result"),
+            (0x40, b"\0\x07"),
+            self.publish(self.base + "/status", b"status"),
+            (0xE0, b""),
+        ]
+        output = io.StringIO()
+        with (
+            patch.object(probe, "read_frame", side_effect=frames),
+            patch(
+                "roomba_cloud.maps.room_edits.receive_result",
+                side_effect=ValueError("invalid result"),
+            ),
+            contextlib.redirect_stdout(output),
+        ):
+            probe.observe(
+                Mock(),
+                "127.0.0.1",
+                self.metadata,
+                bytearray(),
+                None,
+                capture=capture,
+                shadows=shadows,
+                session="session-id",
+                command_session=command,
+                maintenance=maintenance,
+            )
+        command.acknowledge.assert_called_once_with(7, 0)
+        self.assertEqual(len(capture.record.call_args_list), 2)
+        self.assertEqual(maintenance.record.call_count, len(frames))
+        self.assertEqual(shadows.respond.call_count, 2)
+        self.assertIn("room_edit_response_rejected", output.getvalue())
+        self.assertEqual(command.sendall.call_count, 1)
+
+    def test_observer_negotiates_map_uploads_and_logs_unavailable_routes(self):
+        response_topic = self.base + "/filexfer_resp"
+        request_topic = self.base + "/filexfer_req"
+        uploads = Mock()
+        uploads.path = "uploads.db"
+        uploads.respond.return_value = (
+            response_topic,
+            {"reqParams": {"xferType": "uploadP2MapSmart"}},
+        )
+        conn = Mock()
+        frames = [
+            (0x82, b"\0\x01" + mqtt_string(response_topic) + b"\0"),
+            self.publish(request_topic, b"request"),
+            self.publish(self.base + "/mapdetails/req", b"{}"),
+            self.publish(self.base + "/matter/fabric/req", b"{}"),
+            (0xE0, b""),
+        ]
+        output = io.StringIO()
+        with (
+            patch.object(probe, "read_frame", side_effect=frames),
+            patch.object(probe.time, "sleep") as sleep,
+            contextlib.redirect_stdout(output),
+        ):
+            probe.observe(
+                conn,
+                "127.0.0.1",
+                self.metadata,
+                bytearray(),
+                None,
+                map_uploads=uploads,
+                map_response_delay_ms=50,
+            )
+        uploads.respond.assert_called_once_with(request_topic, b"request", self.robot)
+        sleep.assert_called_once_with(0.05)
+        self.assertIn("map_upload_negotiated", output.getvalue())
+        self.assertIn("mapdetails_response_unavailable", output.getvalue())
+        self.assertIn("matter_fabric_request_unsupported", output.getvalue())
+        self.assertEqual(conn.sendall.call_count, 2)
+
+    def test_observer_reports_unconfigured_dock_reports_and_map_storage(self):
+        output = io.StringIO()
+        frames = [
+            self.publish(self.base + "/dock/paddry/report", b"{}"),
+            self.publish(self.base + "/mapdetails/req", b"{}"),
+            (0xE0, b""),
+        ]
+        with (
+            patch.object(probe, "read_frame", side_effect=frames),
+            contextlib.redirect_stdout(output),
+        ):
+            probe.observe(
+                Mock(),
+                "127.0.0.1",
+                self.metadata,
+                bytearray(),
+                None,
+            )
+        self.assertIn("dock_report_unavailable", output.getvalue())
+        self.assertIn("mapdetails_response_unavailable", output.getvalue())
 
 
 class TLSIntegrationTests(unittest.TestCase):

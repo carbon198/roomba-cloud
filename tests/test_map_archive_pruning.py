@@ -161,6 +161,28 @@ class ArchivePruningTests(unittest.TestCase):
         self.uploads.finish(pending, "failed")
         self.assertTrue(old_path.exists())
 
+    def test_pruning_skips_mismatched_empty_duplicate_and_corrupt_archives(self):
+        mismatched, mismatched_path = self.upload([("mismatch", "1")], finish=False)
+        with self.uploads.connect() as db, db:
+            db.execute("UPDATE uploads SET bytes=0 WHERE token=?", (mismatched,))
+        self.uploads.finish(
+            mismatched, "complete", hashlib.sha256(mismatched_path.read_bytes()).hexdigest()
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.uploads.prune_smart_maps(mismatched)
+        self.assertTrue(mismatched_path.exists())
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.upload([])
+            self.upload([("duplicate", "1"), ("duplicate", "2")])
+
+        corrupt, corrupt_path = self.upload([("corrupt", "1")], valid=False)
+        _, valid_path = self.upload([("corrupt", "2")])
+        self.assertIn(corrupt, self.rows())
+        self.assertTrue(corrupt_path.exists())
+        self.assertTrue(valid_path.exists())
+        self.assertTrue(any(row[0] == "complete" for row in self.rows().values()))
+
     def test_completion_order_not_negotiation_order_determines_newest(self):
         first, first_path = self.upload([("a", "1")], finish=False)
         second, second_path = self.upload([("a", "2")], finish=False)

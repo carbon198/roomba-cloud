@@ -1,10 +1,11 @@
 import contextlib
+import errno
 import io
 from pathlib import Path
 import socket
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from roomba_cloud.telemetry_events import TelemetryEvents, TelemetryNotifier, event_path
 
@@ -62,6 +63,25 @@ class TelemetryEventsTests(unittest.TestCase):
             with events.subscribe(A) as waiting:
                 TelemetryNotifier(self.database).notify(A)
                 self.assertTrue(waiting.wait(2))
+
+    def test_stale_socket_probe_propagates_unexpected_socket_errors(self):
+        path = event_path(self.database)
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as stale:
+            stale.bind(str(path))
+            path.chmod(0o600)
+        main_socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        probe = MagicMock()
+        probe.__enter__.return_value = probe
+        probe.connect.side_effect = OSError(errno.EACCES, "permission denied")
+        with (
+            patch(
+                "roomba_cloud.telemetry_events.socket.socket",
+                side_effect=[main_socket, probe],
+            ),
+            self.assertRaises(PermissionError),
+        ):
+            TelemetryEvents(self.database)
+        self.assertTrue(main_socket.fileno() == -1)
 
     def test_unsafe_paths_are_preserved_and_rejected(self):
         path = event_path(self.database)

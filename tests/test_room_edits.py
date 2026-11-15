@@ -1,9 +1,11 @@
 """Synthetic map editor snapshots and robot edit transactions."""
 
 import contextlib
+import io
 import json
 import sqlite3
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -25,6 +27,157 @@ from test_room_catalog import populate
 
 
 class RoomEditorTests(unittest.TestCase):
+    def test_edit_validation_result_limits_and_expired_status(self):
+        model = self.mission_map()
+        edit = {
+            "map_id": model["id"],
+            "version": model["version"],
+            "revision": model["revision"],
+            "operation": "delete",
+        }
+        for invalid in (
+            None,
+            [],
+            edit | {"operation": "unknown"},
+            edit | {"map_id": None},
+        ):
+            with self.subTest(edit=invalid), self.assertRaises(ValueError):
+                validate_edit(self.shadows.path, self.uploads.path, self.robot, invalid)
+        with self.assertRaisesRegex(ValueError, "partner integer range"):
+            wire_command(
+                {"map_id": self.robot + "-2147483648", "operation": "delete"},
+                None,
+            )
+        for payload in (
+            b"x" * 8193,
+            b"[]",
+            b'{"transaction_id":true,"status":"success"}',
+        ):
+            with self.subTest(payload_size=len(payload)), self.assertRaises(ValueError):
+                receive_result(self.shadows.path, self.robot, payload)
+
+        with contextlib.closing(sqlite3.connect(self.shadows.path)) as db, db:
+            cursor = db.execute(
+                "INSERT INTO room_edits(robot_id,created,status,revision,map_id,archive_token,operation) "
+                "VALUES (?,0,'pending','revision','map-one','archive.tar.gz','rename')",
+                (self.robot,),
+            )
+            transaction_id = cursor.lastrowid
+        with patch("roomba_cloud.maps.room_edits.time.time", return_value=100):
+            self.assertEqual(edit_status(self.shadows.path, self.robot, transaction_id)["status"], "unconfirmed")
+
+    def test_submit_rechecks_map_pending_locks_and_transaction_id_bounds(self):
+        from unittest.mock import Mock
+
+        model = self.mission_map()
+        edit = {
+            "map_id": model["id"],
+            "room_id": "1",
+            "version": model["version"],
+            "revision": model["revision"],
+            "operation": "delete",
+        }
+        session = Mock()
+        with (
+            patch("roomba_cloud.maps.room_edits.validate_edit", return_value=None),
+            patch("roomba_cloud.maps.room_edits.wire_command"),
+            self.assertRaisesRegex(ValueError, "must be an object"),
+        ):
+            submit(self.shadows.path, self.uploads.path, self.robot, session, None)
+
+        empty_catalog = contextlib.nullcontext({})
+        with (
+            patch("roomba_cloud.maps.room_edits.validate_edit", return_value=None),
+            patch("roomba_cloud.maps.room_edits.wire_command", return_value={"command": "del_map"}),
+            patch("roomba_cloud.maps.room_edits.map_catalog", return_value=empty_catalog),
+            self.assertRaisesRegex(ValueError, "Map changed"),
+        ):
+            submit(self.shadows.path, self.uploads.path, self.robot, session, edit)
+
+        fixture_maps = {
+            edit["map_id"]: {
+                "archive": (str(self.directory.name) + "/archive.tar.gz", 1, 1, edit["revision"])
+            }
+        }
+        with contextlib.closing(sqlite3.connect(self.shadows.path)) as db, db:
+            db.execute(
+                "INSERT INTO room_edits(robot_id,created,status,revision,map_id,archive_token,operation) "
+                "VALUES (?,?,'pending','another','other-map','archive.tar.gz','rename')",
+                (self.robot, time.time()),
+            )
+        with (
+            patch("roomba_cloud.maps.room_edits.validate_edit", return_value=None),
+            patch("roomba_cloud.maps.room_edits.wire_command", return_value={"command": "del_map"}),
+            patch(
+                "roomba_cloud.maps.room_edits.map_catalog",
+                return_value=contextlib.nullcontext(fixture_maps),
+            ),
+            patch("roomba_cloud.maps.room_edits.awaiting_upload", return_value=False),
+            self.assertRaisesRegex(ValueError, "Another room edit"),
+        ):
+            submit(self.shadows.path, self.uploads.path, self.robot, session, edit)
+
+        with contextlib.closing(sqlite3.connect(self.shadows.path)) as db, db:
+            db.execute(
+                "INSERT INTO sqlite_sequence(name,seq) "
+                "SELECT 'room_edits',2147483647 "
+                "WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name='room_edits')"
+            )
+            db.execute(
+                "UPDATE sqlite_sequence SET seq=2147483647 WHERE name='room_edits'"
+            )
+            db.execute(
+                "UPDATE room_edits SET status='confirmed',released_at=1"
+            )
+        with (
+            patch("roomba_cloud.maps.room_edits.validate_edit", return_value=None),
+            patch("roomba_cloud.maps.room_edits.wire_command", return_value={"command": "del_map"}),
+            patch(
+                "roomba_cloud.maps.room_edits.map_catalog",
+                return_value=contextlib.nullcontext(fixture_maps),
+            ),
+            patch("roomba_cloud.maps.room_edits.awaiting_upload", return_value=False),
+            self.assertRaisesRegex(ValueError, "transaction ID limit"),
+        ):
+            submit(self.shadows.path, self.uploads.path, self.robot, session, edit)
+
+    def test_bootstrap_handles_unavailable_empty_and_invalid_inventories(self):
+        from unittest.mock import Mock
+
+        topic = f"$aws/things/{self.robot}/shadow/name/ro-currentstate"
+        session = Mock()
+
+        def set_inventory(inventory):
+            with contextlib.closing(sqlite3.connect(self.shadows.path)) as db, db:
+                row = db.execute("SELECT document FROM shadows WHERE topic=?", (topic,)).fetchone()
+                document = json.loads(row[0])
+                document["state"]["reported"]["p2maps"] = inventory
+                db.execute(
+                    "UPDATE shadows SET document=? WHERE topic=?",
+                    (json.dumps(document), topic),
+                )
+
+        set_inventory(None)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            bootstrap_once(
+                self.shadows.path, self.uploads.path, self.robot, session, include_missing=True
+            )
+        self.assertIn("map_bootstrap_failed", output.getvalue())
+
+        set_inventory([])
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            bootstrap_once(self.shadows.path, self.uploads.path, self.robot, session)
+        self.assertIn("robot reports no saved maps", output.getvalue())
+        set_inventory([{"p2map_id": "unverified-map", "p2mapv_id": "1.0"}])
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            bootstrap_once(
+                self.shadows.path, self.uploads.path, self.robot, session, include_missing=True
+            )
+        self.assertIn("map_bootstrap_failed", output.getvalue())
+
     def test_room_name_validation_and_normalization_before_publish(self):
         from unittest.mock import Mock
         from roomba_cloud.maps.room_edits import normalize_room_name

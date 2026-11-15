@@ -214,6 +214,36 @@ class ProvisioningFlowTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaisesRegex(BleakError, "No Bluetooth adapter"):
                     await ble.select_robot(self.args(), None)
 
+    async def test_unsupported_platform_and_filtered_robot_scan(self):
+        with (
+            patch.object(ble.sys, "platform", "freebsd"),
+            self.assertRaisesRegex(BleakError, "Supported Bluetooth platforms"),
+        ):
+            await ble.select_adapter()
+        device = SimpleNamespace(name="Roomba Two", address="AA:02")
+        found = {
+            "AA:02": (
+                device,
+                SimpleNamespace(local_name="Roomba Two", service_uuids=[ble.SERVICE]),
+            )
+        }
+        args = self.args()
+        args.address = "AA:01"
+        with (
+            patch.object(ble.BleakScanner, "discover", new_callable=AsyncMock, return_value=found),
+            contextlib.redirect_stdout(io.StringIO()),
+            self.assertRaisesRegex(BleakError, "No Roombas"),
+        ):
+            await ble.select_robot(args, None)
+        args.address = None
+        args.name = "missing"
+        with (
+            patch.object(ble.BleakScanner, "discover", new_callable=AsyncMock, return_value=found),
+            contextlib.redirect_stdout(io.StringIO()),
+            self.assertRaisesRegex(BleakError, "No Roombas"),
+        ):
+            await ble.select_robot(args, None)
+
     async def test_scan_lists_robots_and_keeps_selected_device_adapter_details(self):
         devices = [
             SimpleNamespace(name=name, address=address)
@@ -273,6 +303,35 @@ class ProvisioningFlowTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(await ble.finish_when_connected(client, queue, 0.001))
         client.write_gatt_char.assert_not_awaited()
 
+    async def test_wifi_failure_diagnostics_and_unspecified_ip(self):
+        client = Mock()
+        client.read_gatt_char = AsyncMock(
+            side_effect=[b"\x01", b"secret-error", b"192.0.2.1"]
+        )
+        queue = asyncio.Queue()
+        queue.put_nowait(b"\x03")
+        with (
+            patch.object(ble.LOGGER, "isEnabledFor", return_value=True),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            self.assertFalse(await ble.finish_when_connected(client, queue, 1))
+        self.assertEqual(
+            client.read_gatt_char.await_args_list,
+            [
+                unittest.mock.call(ble.U["wifi_status"]),
+                unittest.mock.call(ble.U["wifi_error"]),
+                unittest.mock.call(ble.U["robot_ip"]),
+            ],
+        )
+
+        client.read_gatt_char = AsyncMock(return_value=b"0.0.0.0")
+        queue = asyncio.Queue()
+        queue.put_nowait(b"\x01")
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaisesRegex(
+            ValueError, "unspecified IP"
+        ):
+            await ble.finish_when_connected(client, queue, 1)
+
     async def test_authorized_and_denied_provisioning_flows(self):
         for authorize in (True, False):
             with self.subTest(authorize=authorize):
@@ -322,6 +381,96 @@ class ProvisioningFlowTests(unittest.IsolatedAsyncioTestCase):
                     finish.assert_not_awaited()
                     self.assertNotIn("should now be registered", text)
                 client.disconnect.assert_awaited_once()
+
+    async def test_empty_password_invalid_identity_and_finish_failure_do_not_claim_success(self):
+        device = SimpleNamespace(name="Roomba One", address="AA:01")
+        with (
+            patch.object(ble, "select_adapter", new_callable=AsyncMock, return_value=None),
+            patch.object(ble, "select_robot", new_callable=AsyncMock, return_value=device),
+            patch.object(ble.getpass, "getpass", return_value=""),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            self.assertEqual(await ble.main(self.args()), 1)
+
+        client = Mock()
+        client.is_connected = True
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.read_gatt_char = AsyncMock(return_value=b"invalid identity")
+        client.write_gatt_char = AsyncMock()
+        client.stop_notify = AsyncMock()
+        client.disconnect = AsyncMock()
+        with (
+            patch.object(ble, "select_adapter", new_callable=AsyncMock, return_value=None),
+            patch.object(ble, "select_robot", new_callable=AsyncMock, return_value=device),
+            patch.object(ble, "BleakClient", return_value=client),
+            patch.object(ble.getpass, "getpass", return_value="wifi-secret"),
+            patch.object(ble, "setup_provisioning_session", new_callable=AsyncMock),
+            patch.object(
+                ble, "await_user_confirmation", new_callable=AsyncMock, return_value=True
+            ),
+            contextlib.redirect_stdout(io.StringIO()),
+            self.assertRaisesRegex(ValueError, "invalid identity"),
+        ):
+            await ble.main(self.args())
+        client.write_gatt_char.assert_not_awaited()
+        client.disconnect.assert_awaited_once()
+
+        client.read_gatt_char = AsyncMock(return_value=f"iRobot-{ROBOT}".encode())
+        async def setup_and_queue_status(_, status_callback, subscribed):
+            status_callback(None, b"\x08")
+            subscribed.append(ble.U["wifi_status"])
+
+        output = io.StringIO()
+        errors = io.StringIO()
+        with (
+            patch.object(ble, "select_adapter", new_callable=AsyncMock, return_value=None),
+            patch.object(ble, "select_robot", new_callable=AsyncMock, return_value=device),
+            patch.object(ble, "BleakClient", return_value=client),
+            patch.object(ble.getpass, "getpass", return_value="wifi-secret"),
+            patch.object(
+                ble,
+                "setup_provisioning_session",
+                new_callable=AsyncMock,
+                side_effect=setup_and_queue_status,
+            ),
+            patch.object(
+                ble, "await_user_confirmation", new_callable=AsyncMock, return_value=True
+            ),
+            patch.object(ble, "read_diagnostics", new_callable=AsyncMock, return_value={}),
+            patch.object(
+                ble,
+                "finish_when_connected",
+                new_callable=AsyncMock,
+                side_effect=BleakError("connection lost"),
+            ),
+            patch.object(ble.LOGGER, "isEnabledFor", return_value=True),
+            contextlib.redirect_stdout(output),
+            contextlib.redirect_stderr(errors),
+        ):
+            args = ble.parse_arguments(
+                ["--ssid", "Private Wi-Fi", "--domain", "roomba.example.com", "--debug"]
+            )
+            self.assertEqual(await ble.main(args), 2)
+        self.assertIn("Unable to finish provisioning", errors.getvalue())
+        self.assertNotIn("Setup complete", output.getvalue())
+        self.assertEqual(client.write_gatt_char.await_count, 9)
+
+    def test_cli_maps_timeout_and_keyboard_interrupt_to_exit_codes(self):
+        flags = ["ble_provision.py", "--ssid", "Wi-Fi", "--domain", "roomba.example.com"]
+        for error, expected in ((TimeoutError(), 2), (KeyboardInterrupt(), 130)):
+            def stop_before_scheduling(coroutine, failure=error):
+                coroutine.close()
+                raise failure
+
+            with (
+                self.subTest(error=type(error).__name__),
+                patch.object(sys, "argv", flags),
+                patch("asyncio.run", side_effect=stop_before_scheduling),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                self.assertEqual(ble.cli(), expected)
 
     async def test_notifications_and_cleanup_remain_quiet(self):
         client = Mock()

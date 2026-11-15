@@ -101,6 +101,109 @@ class MapUploadTests(unittest.TestCase):
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
             self.assertNotIn("private", path.read_bytes().decode("latin1"))
 
+    def test_negotiation_rejects_unconfigured_oversized_recursive_and_active_requests(self):
+        with tempfile.TemporaryDirectory() as directory:
+            unconfigured = maps.MapUploadService(Path(directory) / "unconfigured.db")
+            self.assertIsNone(unconfigured.respond("unrelated/topic", self.request(), self.robot))
+            with self.assertRaisesRegex(ValueError, "requires an HTTPS base URL"):
+                unconfigured.respond(self.topic, self.request(), self.robot)
+
+            service = maps.MapUploadService(
+                Path(directory) / "configured.db", "https://localhost"
+            )
+            service.heartbeat()
+            with self.assertRaisesRegex(ValueError, "size limit"):
+                service.respond(self.topic, b"x" * (256 * 1024 + 1), self.robot)
+            with (
+                patch("roomba_cloud.maps.upload.json.loads", side_effect=RecursionError),
+                self.assertRaisesRegex(ValueError, "nesting exceeds limit"),
+            ):
+                service.respond(self.topic, self.request(), self.robot)
+            with self.assertRaisesRegex(ValueError, "request schema"):
+                service.respond(
+                    self.topic,
+                    b'{"xferType":"uploadP2MapMission","xferId":1,"uploadP2MapMission":[]}',
+                    self.robot,
+                )
+            with (
+                patch.object(maps.MapUploadService, "MAX_ACTIVE_UPLOADS", 0),
+                self.assertRaisesRegex(ValueError, "request count limit"),
+            ):
+                service.respond(self.topic, self.request(), self.robot)
+
+    def test_upload_handler_rejects_bad_routes_headers_and_claim_errors(self):
+        token = "a" * 64
+
+        def handler(path, content_lengths=(), transfer_encoding=None):
+            instance = object.__new__(maps.MapUploadHandler)
+            instance.path = path
+            instance.headers = Mock()
+            instance.headers.get_all.return_value = list(content_lengths)
+            instance.headers.get.return_value = transfer_encoding
+            instance.connection = Mock()
+            instance.server = Mock()
+            instance.server.max_bytes = 1024
+            instance.server.max_total = 2048
+            instance.server.uploads = Mock()
+            instance.reply = Mock()
+            return instance
+
+        invalid_path = handler("/invalid")
+        with patch.object(maps, "log"):
+            invalid_path.do_PUT()
+        invalid_path.reply.assert_called_once_with(404)
+
+        invalid_headers = handler("/map-upload/" + token)
+        with patch.object(maps, "log"):
+            invalid_headers.do_PUT()
+        invalid_headers.reply.assert_called_once_with(400)
+
+        transfer_encoded = handler(
+            "/map-upload/" + token, content_lengths=("10",), transfer_encoding="chunked"
+        )
+        with patch.object(maps, "log"):
+            transfer_encoded.do_PUT()
+        transfer_encoded.reply.assert_called_once_with(400)
+
+        rejected = handler("/map-upload/" + token, content_lengths=("10",))
+        rejected.server.uploads.claim.side_effect = maps.UploadRejected(409, "already used")
+        with patch.object(maps, "log"):
+            rejected.do_PUT()
+        rejected.reply.assert_called_once_with(409)
+
+        failed = handler("/map-upload/" + token, content_lengths=("10",))
+        failed.server.uploads.claim.side_effect = OSError("private storage path")
+        with patch.object(maps, "log"):
+            failed.do_PUT()
+        failed.reply.assert_called_once_with(500)
+
+    def test_smart_map_pruning_rejects_invalid_tokens_and_missing_archives(self):
+        with tempfile.TemporaryDirectory() as directory:
+            service = maps.MapUploadService(Path(directory) / "uploads.db")
+            with service.connect() as db, db:
+                db.executemany(
+                    "INSERT INTO uploads(token,robot_id,xfer_type,xfer_id,expires,status,bytes,sha256) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
+                    [
+                        ("bad-token", self.robot, "uploadP2MapSmart", 1, 200, "complete", 0, "x"),
+                        ("b" * 64, self.robot, "uploadP2MapSmart", 2, 200, "complete", 1, "x"),
+                    ],
+                )
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                service.prune_smart_maps("bad-token")
+                service.prune_smart_maps("b" * 64)
+            self.assertEqual(output.getvalue().count("map_archive_prune_skipped"), 2)
+
+            with service.connect() as db, db:
+                db.execute(
+                    "INSERT INTO uploads(token,robot_id,xfer_type,xfer_id,expires,status,bytes,sha256) "
+                    "VALUES ('bad-prune',?,'uploadP2MapSmart',3,200,'pruning',0,NULL)",
+                    (self.robot,),
+                )
+            with self.assertRaisesRegex(ValueError, "Invalid pruning token"):
+                service.finish_pruning()
+
     def test_expired_requests_are_cleaned_and_historical_uploads_do_not_fill_limit(self):
         with tempfile.TemporaryDirectory() as directory:
             service = maps.MapUploadService(Path(directory) / "uploads.db", "https://localhost")
