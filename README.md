@@ -105,6 +105,9 @@ You will need to add a TXT to your DNS provider record after starting the contai
 <details>
   <summary>Click to Expand</summary>
 
+You can supply your own certificate if you have one the robot will trust.
+Its CA bundle is copied from Mozilla as of `Mon Jul 5 21:35:54 2021 GMT`.
+
 Copy the full certificate chain and matching unencrypted private key into
 `certs/fullchain.pem` and `certs/privkey.pem`.
 
