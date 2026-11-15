@@ -64,7 +64,9 @@ class RoomEditorTests(unittest.TestCase):
             )
             transaction_id = cursor.lastrowid
         with patch("roomba_cloud.maps.room_edits.time.time", return_value=100):
-            self.assertEqual(edit_status(self.shadows.path, self.robot, transaction_id)["status"], "unconfirmed")
+            self.assertEqual(
+                edit_status(self.shadows.path, self.robot, transaction_id)["status"], "unconfirmed"
+            )
 
     def test_submit_rechecks_map_pending_locks_and_transaction_id_bounds(self):
         from unittest.mock import Mock
@@ -123,12 +125,8 @@ class RoomEditorTests(unittest.TestCase):
                 "SELECT 'room_edits',2147483647 "
                 "WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name='room_edits')"
             )
-            db.execute(
-                "UPDATE sqlite_sequence SET seq=2147483647 WHERE name='room_edits'"
-            )
-            db.execute(
-                "UPDATE room_edits SET status='confirmed',released_at=1"
-            )
+            db.execute("UPDATE sqlite_sequence SET seq=2147483647 WHERE name='room_edits'")
+            db.execute("UPDATE room_edits SET status='confirmed',released_at=1")
         with (
             patch("roomba_cloud.maps.room_edits.validate_edit", return_value=None),
             patch("roomba_cloud.maps.room_edits.wire_command", return_value={"command": "del_map"}),

@@ -125,9 +125,7 @@ class MapPreviewTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Invalid map geometry message"):
             decode_geometry(zlib.compress(base + field(3, 1)))
         with self.assertRaisesRegex(ValueError, "Too many room contours"):
-            decode_geometry(
-                geometry(contours=[(1, [(0, 0), (1, 0), (1, 1)]) for _ in range(101)])
-            )
+            decode_geometry(geometry(contours=[(1, [(0, 0), (1, 0), (1, 1)]) for _ in range(101)]))
         with self.assertRaisesRegex(ValueError, "Invalid contour room ID"):
             decode_geometry(zlib.compress(base + field(14, field(1, b"invalid"))))
 
@@ -135,7 +133,9 @@ class MapPreviewTests(unittest.TestCase):
         line = field(2, point) + field(3, point)
         valid_room = field(1, 1) + field(2, line)
         valid_structure = field(2, b"ignored") + field(1, valid_room)
-        self.assertEqual(len(decode_geometry(geometry(structure=valid_structure)).structural_lines), 1)
+        self.assertEqual(
+            len(decode_geometry(geometry(structure=valid_structure)).structural_lines), 1
+        )
 
         for structure, reason in (
             (field(1, 1), "Invalid structural room geometry"),
@@ -468,6 +468,7 @@ class MapPreviewTests(unittest.TestCase):
                     run_name="__main__",
                 )
             self.assertEqual(len(list(output_from_cli.iterdir())), 4)
+
 
 if __name__ == "__main__":
     unittest.main()

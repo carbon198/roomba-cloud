@@ -232,9 +232,10 @@ class CommandTests(unittest.TestCase):
                         (b"x" * 65537 + b"\n", "Invalid command framing"),
                         (b"not-json\n", "Command transport failed"),
                     ):
-                        with self.subTest(expected=expected), socket.socket(
-                            socket.AF_UNIX, socket.SOCK_STREAM
-                        ) as conn:
+                        with (
+                            self.subTest(expected=expected),
+                            socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn,
+                        ):
                             conn.settimeout(2)
                             conn.connect(str(server.path))
                             conn.sendall(payload)

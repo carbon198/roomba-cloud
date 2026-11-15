@@ -281,14 +281,10 @@ class ShadowTests(unittest.TestCase):
         for multi_pass, two_pass_supported in ((0, False), (1, True), (3, False)):
             self.service.respond(
                 prefix + "/update",
-                json.dumps(
-                    {"state": {"reported": {"cap": {"multiPass": multi_pass}}}}
-                ).encode(),
+                json.dumps({"state": {"reported": {"cap": {"multiPass": multi_pass}}}}).encode(),
                 robot_id,
             )
-            values = {
-                item["key"]: item["value"] for item in configuration(self.path, robot_id)
-            }
+            values = {item["key"]: item["value"] for item in configuration(self.path, robot_id)}
             self.assertEqual("two_pass" in values, two_pass_supported)
             self.assertNotIn("suction_level", values)
 
@@ -351,9 +347,7 @@ class ShadowTests(unittest.TestCase):
         self.assertIsNone(self.service.respond(self.base + "get/extra", b"{}", "test"))
         self.assertIsNone(self.service.respond(self.base + "delete", b"{}", "test"))
 
-        with patch(
-            "roomba_cloud.shadow_service.clears_desired", side_effect=RecursionError
-        ):
+        with patch("roomba_cloud.shadow_service.clears_desired", side_effect=RecursionError):
             _, rejected = self.request(
                 "update", {"state": {"reported": {}, "desired": {"nested": {}}}}
             )

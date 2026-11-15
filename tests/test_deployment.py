@@ -227,7 +227,9 @@ class ConfigurationTests(unittest.TestCase):
             child.poll.return_value = None
             child.wait.side_effect = [subprocess.TimeoutExpired("https", 15), 0]
             with (
-                patch("roomba_cloud.server.subprocess.Popen", side_effect=[child, OSError("start")]),
+                patch(
+                    "roomba_cloud.server.subprocess.Popen", side_effect=[child, OSError("start")]
+                ),
                 patch(
                     "roomba_cloud.server.os.killpg",
                     side_effect=[ProcessLookupError(), ProcessLookupError()],

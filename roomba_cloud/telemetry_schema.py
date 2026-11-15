@@ -205,7 +205,9 @@ def field_descriptor(key: str) -> FieldDescriptor:
         "kind": "binary_sensor" if expected is bool else "sensor",
     }
     if key == "battery":
-        descriptor.update(device_class="battery", unit_of_measurement="%", state_class="measurement")
+        descriptor.update(
+            device_class="battery", unit_of_measurement="%", state_class="measurement"
+        )
     if key == "mission_area":
         descriptor.update(unit_of_measurement="ft\u00b2", state_class="measurement")
     if key in TIMESTAMP_FIELDS:

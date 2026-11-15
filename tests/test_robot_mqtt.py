@@ -115,9 +115,7 @@ class ProtocolTests(unittest.TestCase):
         }
         for code, reason in reasons.items():
             with self.subTest(code=code), self.assertRaisesRegex(poc.ProtocolError, reason):
-                poc.MQTT(FakeTransport([(0x20, b"\0" + bytes([code]))])).connect(
-                    "robot", "secret"
-                )
+                poc.MQTT(FakeTransport([(0x20, b"\0" + bytes([code]))])).connect("robot", "secret")
 
     def test_subscription_rejection(self):
         with self.assertRaisesRegex(poc.ProtocolError, "Subscription rejected"):
@@ -152,16 +150,15 @@ class ProtocolTests(unittest.TestCase):
     def test_incoming_qos0_prints_payload_and_qos1_rejects_invalid_identifiers(self):
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            poc.MQTT(FakeTransport()).incoming(
-                0x38, poc.mqtt_string("state") + b'{"ok":true}'
-            )
+            poc.MQTT(FakeTransport()).incoming(0x38, poc.mqtt_string("state") + b'{"ok":true}')
         message = json.loads(output.getvalue())
         self.assertTrue(message["duplicate"])
         self.assertEqual(message["payload_text"], '{"ok":true}')
         self.assertFalse(message["retained"])
         for identifier in (b"\0\0",):
-            with self.subTest(identifier=identifier), self.assertRaisesRegex(
-                poc.ProtocolError, "packet identifier"
+            with (
+                self.subTest(identifier=identifier),
+                self.assertRaisesRegex(poc.ProtocolError, "packet identifier"),
             ):
                 poc.MQTT(FakeTransport()).incoming(
                     0x32, poc.mqtt_string("state") + identifier + b"payload"
@@ -189,9 +186,7 @@ class ProtocolTests(unittest.TestCase):
 
     def test_subscribe_rejects_malformed_acknowledgements_and_times_out(self):
         for body in (b"\0", b"\0\x02\0", b"\0\x01\x80", b"\0\x02\0"):
-            with self.subTest(body=body), self.assertRaisesRegex(
-                poc.ProtocolError, "SUBACK"
-            ):
+            with self.subTest(body=body), self.assertRaisesRegex(poc.ProtocolError, "SUBACK"):
                 poc.MQTT(FakeTransport([(0x90, body)])).subscribe("state")
         client = poc.MQTT(FakeTransport())
         with (
@@ -210,9 +205,10 @@ class ProtocolTests(unittest.TestCase):
 
         transport = FakeTransport()
         client = poc.MQTT(transport)
-        with patch.object(
-            poc.time, "monotonic", side_effect=[0, 0, 0, 11, 11, 11, 21, 21]
-        ), patch.object(transport, "receive", return_value=(0xD0, b"")):
+        with (
+            patch.object(poc.time, "monotonic", side_effect=[0, 0, 0, 11, 11, 11, 21, 21]),
+            patch.object(transport, "receive", return_value=(0xD0, b"")),
+        ):
             client.listen(20)
         self.assertEqual(transport.sent, [b"\xc0\x00"])
 
@@ -427,9 +423,7 @@ class TLSIntegrationTests(unittest.TestCase):
             ) as write,
         ):
             transport.send(b"data")
-        self.assertEqual(
-            [call.args[1] for call in write.call_args_list], [b"data", b"data", b"ta"]
-        )
+        self.assertEqual([call.args[1] for call in write.call_args_list], [b"data", b"data", b"ta"])
 
         with (
             patch.object(poc.time, "monotonic", side_effect=[0, 2]),
@@ -565,7 +559,10 @@ class DiscoveryAndMainTests(unittest.TestCase):
 
     def test_discover_cli_dispatches_validated_target_and_timeout(self):
         with (
-            patch("sys.argv", ["robot_mqtt.py", "discover", "--target", "192.0.2.255", "--timeout", "2.5"]),
+            patch(
+                "sys.argv",
+                ["robot_mqtt.py", "discover", "--target", "192.0.2.255", "--timeout", "2.5"],
+            ),
             patch.object(poc, "discover") as discover,
         ):
             poc.main()
@@ -674,7 +671,19 @@ class DiscoveryAndMainTests(unittest.TestCase):
         wake = MagicMock()
         wake.__enter__.return_value = wake
         with (
-            patch("sys.argv", ["robot_mqtt.py", "listen", "--ip", "::1", "--blid", "robot", "--ca-file", "ca.pem"]),
+            patch(
+                "sys.argv",
+                [
+                    "robot_mqtt.py",
+                    "listen",
+                    "--ip",
+                    "::1",
+                    "--blid",
+                    "robot",
+                    "--ca-file",
+                    "ca.pem",
+                ],
+            ),
             patch.dict(os.environ, {}, clear=True),
             patch.object(poc.socket, "socket", return_value=wake) as socket_create,
             patch.object(poc.time, "sleep"),

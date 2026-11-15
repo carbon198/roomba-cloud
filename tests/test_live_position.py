@@ -211,9 +211,7 @@ class LivePositionTests(unittest.TestCase):
                 self.path,
                 self.robot,
                 timeline,
-                json.dumps(
-                    {"nMssn": 1, "mission_id": "one", "event": [{}] * 1001}
-                ).encode(),
+                json.dumps({"nMssn": 1, "mission_id": "one", "event": [{}] * 1001}).encode(),
             )
         with self.assertRaisesRegex(ValueError, "relocation timestamp"):
             ingest(

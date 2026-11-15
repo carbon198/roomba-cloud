@@ -305,9 +305,7 @@ class ProvisioningFlowTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_wifi_failure_diagnostics_and_unspecified_ip(self):
         client = Mock()
-        client.read_gatt_char = AsyncMock(
-            side_effect=[b"\x01", b"secret-error", b"192.0.2.1"]
-        )
+        client.read_gatt_char = AsyncMock(side_effect=[b"\x01", b"secret-error", b"192.0.2.1"])
         queue = asyncio.Queue()
         queue.put_nowait(b"\x03")
         with (
@@ -327,8 +325,9 @@ class ProvisioningFlowTests(unittest.IsolatedAsyncioTestCase):
         client.read_gatt_char = AsyncMock(return_value=b"0.0.0.0")
         queue = asyncio.Queue()
         queue.put_nowait(b"\x01")
-        with contextlib.redirect_stderr(io.StringIO()), self.assertRaisesRegex(
-            ValueError, "unspecified IP"
+        with (
+            contextlib.redirect_stderr(io.StringIO()),
+            self.assertRaisesRegex(ValueError, "unspecified IP"),
         ):
             await ble.finish_when_connected(client, queue, 1)
 
@@ -407,9 +406,7 @@ class ProvisioningFlowTests(unittest.IsolatedAsyncioTestCase):
             patch.object(ble, "BleakClient", return_value=client),
             patch.object(ble.getpass, "getpass", return_value="wifi-secret"),
             patch.object(ble, "setup_provisioning_session", new_callable=AsyncMock),
-            patch.object(
-                ble, "await_user_confirmation", new_callable=AsyncMock, return_value=True
-            ),
+            patch.object(ble, "await_user_confirmation", new_callable=AsyncMock, return_value=True),
             contextlib.redirect_stdout(io.StringIO()),
             self.assertRaisesRegex(ValueError, "invalid identity"),
         ):
@@ -418,6 +415,7 @@ class ProvisioningFlowTests(unittest.IsolatedAsyncioTestCase):
         client.disconnect.assert_awaited_once()
 
         client.read_gatt_char = AsyncMock(return_value=f"iRobot-{ROBOT}".encode())
+
         async def setup_and_queue_status(_, status_callback, subscribed):
             status_callback(None, b"\x08")
             subscribed.append(ble.U["wifi_status"])
@@ -435,9 +433,7 @@ class ProvisioningFlowTests(unittest.IsolatedAsyncioTestCase):
                 new_callable=AsyncMock,
                 side_effect=setup_and_queue_status,
             ),
-            patch.object(
-                ble, "await_user_confirmation", new_callable=AsyncMock, return_value=True
-            ),
+            patch.object(ble, "await_user_confirmation", new_callable=AsyncMock, return_value=True),
             patch.object(ble, "read_diagnostics", new_callable=AsyncMock, return_value={}),
             patch.object(
                 ble,
@@ -460,6 +456,7 @@ class ProvisioningFlowTests(unittest.IsolatedAsyncioTestCase):
     def test_cli_maps_timeout_and_keyboard_interrupt_to_exit_codes(self):
         flags = ["ble_provision.py", "--ssid", "Wi-Fi", "--domain", "roomba.example.com"]
         for error, expected in ((TimeoutError(), 2), (KeyboardInterrupt(), 130)):
+
             def stop_before_scheduling(coroutine, failure=error):
                 coroutine.close()
                 raise failure

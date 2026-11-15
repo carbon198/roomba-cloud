@@ -108,9 +108,7 @@ class MapUploadTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "requires an HTTPS base URL"):
                 unconfigured.respond(self.topic, self.request(), self.robot)
 
-            service = maps.MapUploadService(
-                Path(directory) / "configured.db", "https://localhost"
-            )
+            service = maps.MapUploadService(Path(directory) / "configured.db", "https://localhost")
             service.heartbeat()
             with self.assertRaisesRegex(ValueError, "size limit"):
                 service.respond(self.topic, b"x" * (256 * 1024 + 1), self.robot)

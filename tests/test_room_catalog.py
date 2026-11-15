@@ -331,9 +331,7 @@ class RoomCatalogTests(unittest.TestCase):
             b"{",
             b'{"request_id":1e999,"p2map_ids":["map-one"]}',
             b'{"request_id":"bad\\u0001id","p2map_ids":["map-one"]}',
-            json.dumps(
-                {"request_id": "x" * 129, "p2map_ids": ["map-one"]}
-            ).encode(),
+            json.dumps({"request_id": "x" * 129, "p2map_ids": ["map-one"]}).encode(),
             json.dumps(
                 {"request_id": 1, "p2map_ids": [f"map-{index}" for index in range(11)]}
             ).encode(),
@@ -368,17 +366,19 @@ class RoomCatalogTests(unittest.TestCase):
             return_value=contextlib.nullcontext(mismatched),
         ):
             with self.assertRaisesRegex(MapDetailsError, "requested_maps_not_fully_available"):
-                respond_map_details(self.service.path, self.uploads.path, topic, request, self.robot_id)
+                respond_map_details(
+                    self.service.path, self.uploads.path, topic, request, self.robot_id
+                )
 
-        no_regions = {
-            "map-one": {"version": "1.0", "archive_version": "1.0", "rooms": {}}
-        }
+        no_regions = {"map-one": {"version": "1.0", "archive_version": "1.0", "rooms": {}}}
         with patch(
             "roomba_cloud.maps.map_details.map_catalog",
             return_value=contextlib.nullcontext(no_regions),
         ):
             with self.assertRaisesRegex(MapDetailsError, "requested_maps_have_no_regions"):
-                respond_map_details(self.service.path, self.uploads.path, topic, request, self.robot_id)
+                respond_map_details(
+                    self.service.path, self.uploads.path, topic, request, self.robot_id
+                )
 
     def test_customer_map_images_handle_empty_stale_and_processing_failures(self):
         from roomba_cloud.maps.catalog import saved_maps
@@ -647,14 +647,13 @@ class RoomCatalogTests(unittest.TestCase):
             {"schema_version": 2, "files": []},
             {"schema_version": 1, "files": {}},
         ):
-            with self.subTest(manifest=manifest), self.assertRaisesRegex(
-                ValueError, "Unsupported map manifest"
+            with (
+                self.subTest(manifest=manifest),
+                self.assertRaisesRegex(ValueError, "Unsupported map manifest"),
             ):
                 read_archive_for_test(manifest)
         with self.assertRaisesRegex(ValueError, "expanded size/member limit"):
-            read_archive_for_test(
-                members=[(f"member-{index}", b"") for index in range(21)]
-            )
+            read_archive_for_test(members=[(f"member-{index}", b"") for index in range(21)])
         for entry in (
             1,
             {"type": "p2mapv", "p2mapv": None},
