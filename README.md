@@ -208,12 +208,6 @@ certificates as described below and set `TLS_CERT=/certs/fullchain.pem` and
 `TLS_KEY=/certs/privkey.pem`, leaving ACME options unset.
 Other settings can remain at their defaults.
 
-`DISCOVERY_TTL` is an advanced optional override and is intentionally omitted
-from the sample `.env`. The default is 86400 seconds (24 hours). To override it,
-add `DISCOVERY_TTL=<seconds>` to `.env`; the accepted range is 1800 through
-2147483647 seconds. Tested V4 firmware clamps values below 1800 seconds.
-Increasing the TTL delays when the robot learns about discovery endpoint changes.
-
 #### Storage
 
 | Storage | Mount inside container | Access |
