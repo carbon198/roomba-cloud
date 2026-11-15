@@ -18,9 +18,13 @@ This is an independent project, not affiliated with iRobot.
 
 | Model | Tested firmware | Status |
 |---|---|---|
+| Roomba 105/105v | `N/A` | Implemented, not tested |
+| Roomba 205 | `N/A` |  Implemented, not tested |
+| Roomba 405 | `N/A` |  Implemented, not tested |
 | Roomba 505/507 | `p25-505+9.3.6+I3.8.149` | Physically tested |
+| Roomba 705 | `N/A` |  Implemented, not tested |
 
-Other V4 models have not been verified.
+Only the 505 has been tested so far. Other V4 models will almost certainly work as most of their firmware is identical. The extra features on the 705 are the most likely to present issues, but I have done my best to implement them without owning a 705 to test with. If you test this emulator with another robot model, please open a github issue letting me know!
 
 ## Requirements
 
