@@ -42,7 +42,61 @@ from roomba_cloud.ha_mqtt_publish import (
 
 EXTRA_FIELDS = {
     "stats_mission_canceled_count": ("ro-stats", ("bbmssn", "nMssnC"), int, "Missions canceled"),
+    "stats_unprocessed_error": (
+        "ro-stats",
+        ("unprocessedError",),
+        str,
+        "Unprocessed robot error detail",
+    ),
     "system_powered_hours": ("ro-stats", ("bbsys", "hr"), int, "Powered-on time"),
+    "dock_refill_state": (
+        "ro-currentstate",
+        ("dock", "frState"),
+        int,
+        "Dock refill status",
+    ),
+    "dock_tank_level": (
+        "ro-currentstate",
+        ("dock", "tankLvl"),
+        int,
+        "Dock clean-water tank level (raw)",
+    ),
+    "dock_cap_pad_wash": (
+        "ro-currentstate",
+        ("dock", "cap", "pw"),
+        int,
+        "Dock pad washing capability",
+    ),
+    "dock_cap_evacuate": (
+        "ro-currentstate",
+        ("dock", "cap", "evac"),
+        int,
+        "Dock evacuation capability",
+    ),
+    "dock_cap_pad_dry": (
+        "ro-currentstate",
+        ("dock", "cap", "pd"),
+        int,
+        "Dock pad drying capability",
+    ),
+    "dock_cap_pad_wet_out": (
+        "ro-currentstate",
+        ("dock", "cap", "pwo"),
+        int,
+        "Dock pad wet-out capability",
+    ),
+    "dock_cap_fluid_refill": (
+        "ro-currentstate",
+        ("dock", "cap", "fr"),
+        int,
+        "Dock fluid refill capability",
+    ),
+    "pad_wash_heat_raw": (
+        "rw-settings",
+        ("pwHeat",),
+        int,
+        "Mop wash heat raw code",
+    ),
     "runtime_hours_raw": (
         "ro-currentstate",
         ("runtimeStats", "hr"),
@@ -57,6 +111,61 @@ EXTRA_FIELDS = {
     ),
 }
 CUSTOMER_FIELDS = {**FIELDS, **EXTRA_FIELDS}
+FEATURE_FIELDS = {
+    "stats_unprocessed_error",
+    "dock_refill_state",
+    "dock_tank_level",
+    "dock_pad_dry_state",
+    "dock_pad_wash_state",
+    "pad_dry_allowed",
+    "pad_wash_allowed",
+    "dock_cap_pad_wash",
+    "dock_cap_evacuate",
+    "dock_cap_pad_dry",
+    "dock_cap_pad_wet_out",
+    "dock_cap_fluid_refill",
+    "pad_wash_heat_raw",
+}
+
+
+def _supported_feature_fields(values: dict[str, str | int | float | bool]) -> set[str]:
+    """Include feature diagnostics only when reports positively establish support."""
+    supported: set[str] = set()
+    capability_levels = {
+        "dock_cap_pad_wash": {1, 2, 3, 4},
+        "dock_cap_evacuate": {1},
+        "dock_cap_pad_dry": {1, 2, 3},
+        "dock_cap_pad_wet_out": {1},
+        "dock_cap_fluid_refill": {1, 2},
+    }
+    for key, levels in capability_levels.items():
+        value = values.get(key)
+        if type(value) is int and value in levels:
+            supported.add(key)
+    if "dock_cap_pad_dry" in supported:
+        supported.update({"dock_pad_dry_state", "pad_dry_allowed"})
+    if "dock_cap_pad_wash" in supported:
+        supported.update({"dock_pad_wash_state", "pad_wash_allowed"})
+
+    refill_capability = values.get("dock_cap_fluid_refill")
+    if type(refill_capability) is int and refill_capability in (1, 2):
+        if type(values.get("dock_refill_state")) is int:
+            supported.add("dock_refill_state")
+    if type(values.get("dock_tank_level")) is int:
+        supported.add("dock_tank_level")
+    wash_capability = values.get("dock_cap_pad_wash")
+    heat_level = values.get("pad_wash_heat_raw")
+    if (
+        type(wash_capability) is int
+        and wash_capability in (2, 3, 4)
+        and type(heat_level) is int
+        and heat_level in (0, 1, 2)
+    ):
+        supported.add("pad_wash_heat_raw")
+    error_detail = values.get("stats_unprocessed_error")
+    if isinstance(error_detail, str) and error_detail.strip():
+        supported.add("stats_unprocessed_error")
+    return supported
 
 
 class TelemetryField(TypedDict):
@@ -182,6 +291,9 @@ def snapshot(
     never as deletion-shaped success data.
     """
     values, timestamps, reported_at = telemetry(path, robot_id, CUSTOMER_FIELDS)
+    supported_fields = _supported_feature_fields(values)
+    omitted_feature_fields = FEATURE_FIELDS - supported_fields
+    values = {key: value for key, value in values.items() if key not in omitted_feature_fields}
     now = time.time()
     with contextlib.closing(
         sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)
@@ -251,6 +363,8 @@ def snapshot(
             )
     fields: list[TelemetryField] = []
     for key, (_, descriptor) in zip(FIELDS, discovery(robot_id, ""), strict=True):
+        if key in omitted_feature_fields:
+            continue
         fields.append(
             {
                 "key": key,
@@ -267,6 +381,8 @@ def snapshot(
         if "entity_category" in descriptor:
             fields[-1]["entity_category"] = descriptor["entity_category"]
     for key, (_, _, _, name) in EXTRA_FIELDS.items():
+        if key in omitted_feature_fields:
+            continue
         extra: TelemetryField = {
             "key": key,
             "name": name,

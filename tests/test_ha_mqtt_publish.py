@@ -116,6 +116,114 @@ class HAPublisherTests(unittest.TestCase):
             self.assertNotIn("private", json.dumps(data))
             self.assertEqual(ha.telemetry(path, "b" * 32), ({}, {}, None))
 
+    def test_705_dock_capabilities_and_error_detail_are_allowlisted(self):
+        from roomba_cloud.customer_telemetry import CUSTOMER_FIELDS, snapshot
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.db"
+            service = ShadowService(path)
+            robot_id = "c" * 32
+            prefix = f"$aws/things/{robot_id}/shadow/name/"
+            reports = {
+                "ro-currentstate": {
+                    "dock": {
+                        "cap": {"evac": 1, "pw": 4, "pd": 3, "pwo": 1, "fr": 2},
+                        "frState": 404,
+                        "tankLvl": 100,
+                        "id": "private-dock-id",
+                    }
+                },
+                "rw-settings": {"pwHeat": 0},
+                "ro-stats": {"unprocessedError": "picea unknown fault code:2105"},
+            }
+            for shadow, reported in reports.items():
+                service.respond(
+                    prefix + shadow + "/update",
+                    json.dumps({"state": {"reported": reported}}).encode(),
+                    robot_id,
+                )
+
+            values, timestamps, reported_at = ha.telemetry(path, robot_id, CUSTOMER_FIELDS)
+            self.assertEqual(
+                {
+                    key: values[key]
+                    for key in (
+                        "dock_refill_state",
+                        "dock_tank_level",
+                        "dock_cap_pad_wash",
+                        "dock_cap_evacuate",
+                        "dock_cap_pad_dry",
+                        "dock_cap_pad_wet_out",
+                        "dock_cap_fluid_refill",
+                        "pad_wash_heat_raw",
+                        "stats_unprocessed_error",
+                    )
+                },
+                {
+                    "dock_refill_state": 404,
+                    "dock_tank_level": 100,
+                    "dock_cap_pad_wash": 4,
+                    "dock_cap_evacuate": 1,
+                    "dock_cap_pad_dry": 3,
+                    "dock_cap_pad_wet_out": 1,
+                    "dock_cap_fluid_refill": 2,
+                    "pad_wash_heat_raw": 0,
+                    "stats_unprocessed_error": "picea unknown fault code:2105",
+                },
+            )
+            self.assertNotIn("private-dock-id", json.dumps(values))
+            self.assertTrue(set(values) <= set(CUSTOMER_FIELDS))
+            self.assertEqual(set(timestamps), set(values))
+            self.assertIsInstance(reported_at, int)
+
+            feature_keys = {
+                "dock_refill_state",
+                "dock_tank_level",
+                "dock_pad_dry_state",
+                "dock_pad_wash_state",
+                "pad_dry_allowed",
+                "pad_wash_allowed",
+                "dock_cap_pad_wash",
+                "dock_cap_pad_dry",
+                "dock_cap_pad_wet_out",
+                "dock_cap_fluid_refill",
+                "pad_wash_heat_raw",
+                "stats_unprocessed_error",
+            }
+            result = snapshot(path, robot_id)
+            self.assertTrue(feature_keys <= {field["key"] for field in result["fields"]})
+
+            for shadow, reported in (
+                (
+                    "ro-currentstate",
+                    {
+                        "dock": {
+                            "cap": {"evac": 0, "pw": 0, "pd": 0, "pwo": 0, "fr": 0},
+                            "frState": None,
+                            "tankLvl": None,
+                        }
+                    },
+                ),
+                ("rw-settings", {"pwHeat": None}),
+                ("ro-stats", {"unprocessedError": None}),
+            ):
+                service.respond(
+                    prefix + shadow + "/update",
+                    json.dumps({"state": {"reported": reported}}).encode(),
+                    robot_id,
+                )
+            result = snapshot(path, robot_id)
+            self.assertFalse(feature_keys & {field["key"] for field in result["fields"]})
+            self.assertFalse(feature_keys & result["values"].keys())
+
+            service.respond(
+                prefix + "ro-stats/update",
+                json.dumps({"state": {"reported": {"unprocessedError": "x" * 257}}}).encode(),
+                robot_id,
+            )
+            values, _, _ = ha.telemetry(path, robot_id, CUSTOMER_FIELDS)
+            self.assertNotIn("stats_unprocessed_error", values)
+
     def test_settings_update_does_not_refresh_robot_reporting_or_dynamic_fields(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "state.db"
@@ -269,6 +377,8 @@ class HAPublisherTests(unittest.TestCase):
             self.assertEqual(timestamps["child_lock"], 200)
             self.assertNotIn("private", json.dumps(data))
             documents = [d for _, d in ha.discovery(robot_id, "test")]
+            self.assertEqual(documents[0]["device"]["name"], "Roomba local")
+            self.assertEqual(documents[0]["device"]["model"], "Roomba (local cloud telemetry)")
             self.assertEqual(
                 next(d for d in documents if d["name"] == "Mission cleaned area")[
                     "unit_of_measurement"

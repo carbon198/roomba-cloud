@@ -48,6 +48,15 @@ class DockReportTests(unittest.TestCase):
         with patch("roomba_cloud.dock_reports.time.time", return_value=1000.5):
             store_report(self.path, self.robot_id, "paddry", payload)
         result = snapshot(self.path, self.robot_id)
+        field_keys = {field["key"] for field in result["fields"]}
+        self.assertNotIn("dock_cap_evacuate", field_keys)
+        self.assertNotIn("dock_cap_pad_wash", field_keys)
+        self.assertNotIn("dock_refill_state", field_keys)
+        self.assertNotIn("dock_tank_level", field_keys)
+        self.assertNotIn("dock_pad_dry_state", field_keys)
+        self.assertNotIn("dock_pad_wash_state", field_keys)
+        self.assertNotIn("pad_dry_allowed", field_keys)
+        self.assertNotIn("pad_wash_allowed", field_keys)
         self.assertEqual(
             result["dock_reports"]["paddry"],
             {

@@ -222,6 +222,10 @@ def telemetry(db_path, robot_id, fields=None):
         document = documents[name]
         value = lookup(document.get("state", {}).get("reported", {}), keys)
         if type(value) is expected:
+            if key == "stats_unprocessed_error" and (
+                len(value) > 256 or any(ord(char) < 32 for char in value)
+            ):
+                continue
             if key == "battery" and not 0 <= value <= 100:
                 continue
             if expected is list:
@@ -246,9 +250,9 @@ def discovery(robot_id, base):
     """Yield retained HA discovery in FIELDS order (customer field metadata relies on it)."""
     device = {
         "identifiers": ["roomba_local_" + robot_id],
-        "name": "Roomba 505 local",
+        "name": "Roomba local",
         "manufacturer": "iRobot",
-        "model": "505 (local cloud telemetry)",
+        "model": "Roomba (local cloud telemetry)",
     }
     for key, (_, _, expected, label) in FIELDS.items():
         component = "binary_sensor" if expected is bool else "sensor"
